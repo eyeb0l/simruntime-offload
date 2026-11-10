@@ -1,0 +1,32 @@
+{
+  "devices": {
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+      {
+        "dataPath": "/Users/tester/Library/Developer/CoreSimulator/Devices/442F8047-1879-4B51-83DA-55E4CCB4515C/data",
+        "dataPathSize": 2197037056,
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro",
+        "isAvailable": true,
+        "lastUsedAt": "2026-11-10T19:51:55Z",
+        "logPath": "/Users/tester/Library/Logs/CoreSimulator/442F8047-1879-4B51-83DA-55E4CCB4515C",
+        "logPathSize": 516096,
+        "name": "sro-offload-3",
+        "state": "Shutdown",
+        "udid": "442F8047-1879-4B51-83DA-55E4CCB4515C"
+      }
+    ],
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-2": [
+      {
+        "dataPath": "/Users/tester/Library/Developer/CoreSimulator/Devices/DE18CFC3-D59C-4319-BCD9-703ED09DE99D/data",
+        "dataPathSize": 3321626624,
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro",
+        "isAvailable": true,
+        "lastUsedAt": "2026-11-10T19:29:08Z",
+        "logPath": "/Users/tester/Library/Logs/CoreSimulator/DE18CFC3-D59C-4319-BCD9-703ED09DE99D",
+        "logPathSize": 557056,
+        "name": "Work iPhone",
+        "state": "Shutdown",
+        "udid": "DE18CFC3-D59C-4319-BCD9-703ED09DE99D"
+      }
+    ]
+  }
+}

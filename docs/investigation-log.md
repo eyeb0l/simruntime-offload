@@ -410,3 +410,26 @@ delete; no special repair path for disconnection.
 
 24B8117 was internal for the duration of the disconnection test and is served
 from the SSD again.
+
+---
+
+## Session 11 — 2026-11-10 — native tool, build steps 1–3
+
+Decisions taken by the project owner: the design's recommendations are
+accepted; MIT licence.
+
+Built, with 79 tests passing: the package skeleton, preflight and `doctor`;
+CoreSimulator, volume and manifest readers and `list`; the image attacher, the
+link registry and the reconcile logic. Run on this machine, `doctor` passes
+every check and `list` reports both runtimes as active on the external volume.
+
+One deviation from the design: volume lookup uses `diskutil info -plist`
+rather than DiskArbitration (design updated with the reason).
+
+One defect found by the integration test before it could matter: the
+mount-point check compared a path as written with the kernel's canonical path,
+so it failed for any path through a symlink such as `/var`. It now
+canonicalises with realpath(3).
+
+Nothing built so far changes the machine when run as a command. The harness
+and its agent are still what serve the runtimes.

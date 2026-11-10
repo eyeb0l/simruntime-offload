@@ -59,30 +59,36 @@ agent. No daemon, no helper tool, no kernel or system extension, no private
 framework.
 
 ```
-Sources/simruntime-offload/
-  Commands/        one file per subcommand; argument parsing and user-facing text only
-  Core/
-    Preflight      version and capability checks; the compatibility table
-    Volume         resolve a volume UUID to a mount point (DiskArbitration)
-    ImageStore     staged images on the volume: copy, checksum, verify
-    Attacher       attach and eject images (/usr/sbin/diskutil image …)
-    Registry       the runtime links in the link directory
-    Simulators     CoreSimulator through `xcrun simctl … -j`: list, delete, booted devices
-    Services       restart SimLaunchHost / the per-user CoreSimulator service
-    Manifest       what is offloaded, as JSON, on the internal disk
-    Agent          install, remove and inspect the LaunchAgent
-    Sync           the reconcile step shared by the agent and the CLI
-  Support/         process execution, logging, errors
-Tests/
+Sources/SimRuntimeOffloadCore/        everything testable; no user-facing text
+  Paths                               every path the tool reads or writes
+  Preflight/  Compatibility           the table of validated version combinations
+              SystemProbe             read-only questions about the machine
+              Doctor                  the checks `doctor` reports
+  System/     Simulators              CoreSimulator through `xcrun simctl … -j`
+              Volumes                 resolve a volume UUID (`diskutil info -plist`)
+              Attacher                attach and eject images (`diskutil image …`)
+              FileSystem              mount points and link targets
+  State/      Manifest                what is offloaded, as JSON, on the internal disk
+              Registry                the runtime links
+              Inventory               the state of each offloaded runtime
+              Sync                    the reconcile step shared by the agent and the CLI
+  Support/    ProcessRunner, Version
+Sources/simruntime-offload/           argument parsing and user-facing text only
+Tests/SimRuntimeOffloadCoreTests/     unit tests, recorded fixtures, one integration test
 ```
 
-**Why Swift.** Direct use of DiskArbitration; a single self-contained binary
+Still to come: `Services` (restarting SimLaunchHost and the per-user
+CoreSimulator service), `ImageStore` (copy, checksum, verify) and `Agent`.
+
+**Why Swift.** A single self-contained binary
 with its own code identity, which the consent model requires (hazard 7); no
 interpreter on the path of a login agent.
 
-**Why it shells out for three things.** There is no public API for attaching a
-disk image with the modern stack, for CoreSimulator, or for launchd job
-control. The tool calls `/usr/sbin/diskutil image attach`, `xcrun simctl` and
+**Why it shells out.** There is no public API for attaching a disk image with
+the modern stack, for CoreSimulator, or for launchd job control. Volume lookup
+also goes through `diskutil info -plist` rather than DiskArbitration: the agent
+is a one-shot, so it needs a lookup, not callbacks, and a plist is trivially
+testable from a recorded fixture. The tool calls `/usr/sbin/diskutil image attach`, `xcrun simctl` and
 `/bin/launchctl` by absolute path with argument arrays, never through a shell,
 and parses only their structured (`--plist`, `-j`) output. Each wrapper is one
 small file so that a change in one of those tools is a one-file fix.
@@ -292,6 +298,10 @@ In priority order. The first three affect the design.
 | 8 | Order of work | Validation items 1 and 2 are done; build next. |
 
 ## 11. Build plan
+
+Progress: steps 1–3 are built and tested (`doctor`, `list`, and the attach,
+link and reconcile core). Nothing built so far changes the machine when run as
+a command; step 4 is the first that does.
 
 1. Package skeleton, `Support`, `Preflight`, `doctor`. Unit tests.
 2. `Simulators`, `Volume`, `Manifest`, `list`. Unit tests with fixtures.

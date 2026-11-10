@@ -1,0 +1,32 @@
+{
+  "runtimes": [
+    {
+      "buildversion": "24A434",
+      "bundlePath": "/private/tmp/simruntime-offload-501/24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime",
+      "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      "isAvailable": true,
+      "isInternal": false,
+      "name": "iOS 27.0",
+      "platform": "iOS",
+      "runtimeRoot": "/private/tmp/simruntime-offload-501/24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot",
+      "supportedArchitectures": [
+        "arm64"
+      ],
+      "version": "27.0"
+    },
+    {
+      "buildversion": "24B8117",
+      "bundlePath": "/private/tmp/simruntime-offload-501/24B8117/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.2.simruntime",
+      "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+      "isAvailable": true,
+      "isInternal": false,
+      "name": "iOS 27.2",
+      "platform": "iOS",
+      "runtimeRoot": "/private/tmp/simruntime-offload-501/24B8117/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.2.simruntime/Contents/Resources/RuntimeRoot",
+      "supportedArchitectures": [
+        "arm64"
+      ],
+      "version": "27.2"
+    }
+  ]
+}

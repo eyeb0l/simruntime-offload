@@ -1,0 +1,39 @@
+{
+  "3FEAF5F7-2FBB-4D87-BA62-772B4D3937D4": {
+    "build": "24A434",
+    "deletable": true,
+    "identifier": "3FEAF5F7-2FBB-4D87-BA62-772B4D3937D4",
+    "kind": "Disk Image",
+    "mountPath": "/Library/Developer/CoreSimulator/Volumes/iOS_24A434",
+    "path": "/Library/Developer/CoreSimulator/Images/3FEAF5F7-2FBB-4D87-BA62-772B4D3937D4.dmg",
+    "platformIdentifier": "com.apple.platform.iphonesimulator",
+    "runtimeBundlePath": "/Library/Developer/CoreSimulator/Volumes/iOS_24A434/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime",
+    "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+    "signatureState": "Verified",
+    "sizeBytes": 8067000161,
+    "state": "Ready",
+    "supportedArchitectures": [
+      "arm64"
+    ],
+    "version": "27.0"
+  },
+  "8FDE74D7-C082-41C1-8BC1-1E93709A16D8": {
+    "build": "24B8117",
+    "deletable": true,
+    "identifier": "8FDE74D7-C082-41C1-8BC1-1E93709A16D8",
+    "kind": "Patchable Cryptex Disk Image",
+    "mountPath": "/private/var/run/com.apple.security.cryptexd/mnt/com.apple.iPhoneOS.SimulatorRuntime-v24.2.8117.0.MQIfDS",
+    "parentMountPath": "/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/7a0695c167683c7fbc650e5913eca65d628b525d.asset/AssetData",
+    "path": "/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/7a0695c167683c7fbc650e5913eca65d628b525d.asset/AssetData",
+    "platformIdentifier": "com.apple.platform.iphonesimulator",
+    "runtimeBundlePath": "/private/var/run/com.apple.security.cryptexd/mnt/com.apple.iPhoneOS.SimulatorRuntime-v24.2.8117.0.MQIfDS/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.2.simruntime",
+    "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+    "signatureState": "Unknown",
+    "sizeBytes": 8315434484,
+    "state": "Ready",
+    "supportedArchitectures": [
+      "arm64"
+    ],
+    "version": "27.2"
+  }
+}

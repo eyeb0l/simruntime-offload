@@ -6,10 +6,18 @@ An investigation into storing and running Xcode Simulator runtimes from
 external storage, reliably enough that it could be trusted for everyday
 development.
 
-**Status: the mechanism is proven on one machine; the tool is not built yet.**
-A shell harness in `experiments/` serves two runtimes from an external SSD on
-macOS 27.2 / Xcode 27.2. Do not run it on a machine you care about without
-reading the assessment first.
+**Status: the mechanism is proven on one machine; the native tool is under
+construction.** Its read-only commands (`doctor`, `list`) work. Offloading is
+still done by a shell harness in `experiments/`, which serves two runtimes from
+an external SSD on macOS 27.2 / Xcode 27.2. Do not run either on a machine you
+care about without reading the assessment first.
+
+```
+swift build
+swift test                                  # unit tests, plus one test that mounts a tiny synthetic image
+.build/debug/simruntime-offload doctor      # can the tool work on this Mac? changes nothing
+.build/debug/simruntime-offload list        # what is on the internal disk and what is offloaded
+```
 
 ## Documents
 
@@ -28,10 +36,13 @@ reading the assessment first.
 
 | Path | Purpose |
 |---|---|
+| `Sources/`, `Tests/` | The native tool: a Swift package with no dependencies. |
 | `experiments/sro.sh` | The harness: stage, attach, detach, sync, eject and a login agent. Not the deliverable. |
 | `experiments/agent/` | The native launcher the login agent needs. |
 | `experiments/bench/` | Read benchmarks used to compare disk-image stacks. |
 | `fixtures/HelloSim/` | Minimal iOS app used to test build, install and launch. |
 | `scripts/collect-baseline.sh` | Read-only diagnostic collection, with personal identifiers redacted. |
+
+Licensed under the [MIT License](LICENSE).
 
 Created in [T3 Code](https://t3.codes).
