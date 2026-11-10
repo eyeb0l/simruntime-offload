@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    # The job name is the status check that branch protection requires on
+    # main. Renaming it means updating the protection rule too.
+    name: Build and test
+    # The only hosted image on macOS 27, which `diskutil image attach` (used
+    # by the integration tests) and the validated configuration need. It is a
+    # preview image.
+    runs-on: xcode-27
+    timeout-minutes: 20
+    env:
+      # The validated Xcode, not the image's default.
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Test
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      # The integration tests skip themselves when they cannot create or
+      # attach a disk image. Locally that is a convenience; here a skip would
+      # turn the check green without having run them.
+      - name: Fail on skipped tests
+        run: |
+          if grep -F ": Test skipped" "$RUNNER_TEMP/test.log"; then
+            echo "::error::Some tests were skipped; the integration tests did not run."
+            exit 1
+          fi

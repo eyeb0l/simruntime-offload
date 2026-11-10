@@ -206,6 +206,8 @@ swift test
 Unit tests, plus tests that create and attach a small synthetic disk image.
 They need no runtime and no external disk, and change nothing outside a
 temporary directory. Set `SRO_SKIP_INTEGRATION` to skip the ones that attach.
+CI runs them all on every pull request, on GitHub's macOS 27 image with Xcode
+27.2, and fails if any was skipped.
 
 ```
 scripts/system-test.sh .build/release/simruntime-offload <build> <UUID>
