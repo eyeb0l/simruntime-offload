@@ -7,19 +7,31 @@
 # typed by hand. It needs no root and never writes outside:
 #   - <external volume>/SimRuntimes/
 #   - /private/tmp/simruntime-offload-<uid>/                (mount points only)
-#   - ~/Library/Developer/CoreSimulator/Profiles/Runtimes/   (one symlink per runtime)
+#   - the link directory (default ~/Library/Developer/CoreSimulator/Profiles/Runtimes/)
+#   - ~/Library/Application Support/simruntime-offload/      (manifest, installed copy)
+#   - ~/Library/LaunchAgents/ and ~/Library/Logs/simruntime-offload/ (agent only)
 #
 # It never deletes or modifies an installed runtime. Removing the internal copy
 # after staging is a separate, deliberate `xcrun simctl runtime delete`.
 #
 # Usage:
 #   sro.sh [--dry-run] status
-#   sro.sh [--dry-run] stage  <image-uuid>     copy a registered runtime image to the volume and verify it
-#   sro.sh [--dry-run] attach <build>          attach the staged image read-only and link its runtime bundle
+#   sro.sh [--dry-run] stage  <image-uuid>       copy a registered runtime image to the volume and verify it
+#   sro.sh [--dry-run] attach <build>            attach the staged image read-only and link its runtime bundle
 #   sro.sh [--dry-run] detach <build> [--force]  unlink and eject (refuses while any simulator is booted)
+#   sro.sh enable  <build>                       add a staged runtime to the manifest that `sync` serves
+#   sro.sh disable <build>                       remove it from the manifest
+#   sro.sh [--dry-run] sync                      attach every manifest runtime whose volume is present;
+#                                                remove the links of those whose volume is absent
+#   sro.sh agent install|uninstall|status        per-user LaunchAgent that runs `sync` at login and on every mount
 #
 # The external volume is selected by APFS volume UUID, never by name or
 # /dev/diskN:  export SRO_VOLUME_UUID=<uuid>   (see `diskutil info /Volumes/<name>`)
+#
+# Environment:
+#   SRO_VOLUME_UUID   volume used by stage/attach/enable
+#   SRO_MOUNT_ROOT    where images are mounted (default /private/tmp/simruntime-offload-<uid>)
+#   SRO_LINK_DIR      where runtime links are created (default the per-user profile directory)
 
 set -euo pipefail
 
@@ -36,8 +48,16 @@ fi
 # sandbox does include /private/tmp, which also needs no privileges.
 # Override with SRO_MOUNT_ROOT to test other locations.
 mount_root="${SRO_MOUNT_ROOT:-/private/tmp/simruntime-offload-$(id -u)}"
-profiles_dir="$HOME/Library/Developer/CoreSimulator/Profiles/Runtimes"
+profiles_dir="${SRO_LINK_DIR:-$HOME/Library/Developer/CoreSimulator/Profiles/Runtimes}"
 bundle_subpath="Library/Developer/CoreSimulator/Profiles/Runtimes"
+
+state_dir="$HOME/Library/Application Support/simruntime-offload"
+manifest="$state_dir/runtimes.tsv"
+agent_label="dev.simruntime-offload.agent"
+agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
+agent_script="$state_dir/sro.sh"
+agent_binary="$state_dir/sro-agent"
+agent_log_dir="$HOME/Library/Logs/simruntime-offload"
 
 die() {
   echo "error: $*" >&2
@@ -187,10 +207,11 @@ cmd_stage() {
   note "Staged. SHA-256 $sum_dest"
 }
 
-cmd_attach() {
-  local build="${1:?usage: sro.sh attach <build>}"
-  local image mount_point link
-  image="$(staged_image "$build")"
+# attach_image <build> <image path>: mount the image read-only and link its
+# runtime bundle. Shared by `attach` and `sync`.
+attach_image() {
+  local build="$1" image="$2"
+  local mount_point link
   mount_point="$mount_root/$build"
   link="$profiles_dir/offload-$build.simruntime"
 
@@ -212,12 +233,19 @@ cmd_attach() {
     die "$mount_root exists and is not owned by you"
   fi
   run mkdir -p -m 700 "$mount_root"
-  run mkdir -p "$mount_point" "$profiles_dir"
+  run mkdir -p "$mount_point"
+  # The default link directory is ours to create; any other (system) location
+  # must already exist and be writable.
+  case "$profiles_dir" in
+    "$HOME"/*) run mkdir -p "$profiles_dir" ;;
+    *) [ -d "$profiles_dir" ] && [ -w "$profiles_dir" ] || die "link directory $profiles_dir is missing or not writable" ;;
+  esac
   # `diskutil image attach` uses the kernel-backed DiskImages2 stack. The older
   # `hdiutil attach` (deprecated on macOS 27) funnels every read through one
   # user-space helper and collapses under the concurrent I/O of a simulator
   # boot: measured at 881 reads/s against 6,704 on the same SSD.
-  run diskutil image attach --readOnly --nobrowse --mountPoint "$mount_point" "$image"
+  run diskutil image attach --readOnly --nobrowse --mountPoint "$mount_point" "$image" ||
+    die "could not attach $image (from the login agent, \"Operation not permitted\" means it has not been allowed access to removable volumes)"
 
   if [ "$dry_run" -eq 1 ]; then
     echo "would link the .simruntime bundle found under $mount_point/$bundle_subpath to $link"
@@ -235,6 +263,11 @@ cmd_attach() {
   # that CoreSimulator observes always refers to a resolvable bundle.
   ln -s "$bundle" "$link"
   note "Linked $link -> $bundle"
+}
+
+cmd_attach() {
+  local build="${1:?usage: sro.sh attach <build>}"
+  attach_image "$build" "$(staged_image "$build")"
 }
 
 cmd_detach() {
@@ -300,13 +333,190 @@ cmd_detach() {
   [ -z "$whole" ] || diskutil eject "$whole"
 }
 
+# --- Manifest ----------------------------------------------------------------
+# One line per runtime to serve: <build> TAB <volume UUID> TAB <image path
+# relative to the volume root>. Kept on the internal disk so that `sync` can
+# tell which links are ours, and clean them up, while the volume is absent.
+
+cmd_enable() {
+  local build="${1:?usage: sro.sh enable <build>}"
+  local image volume_root relative
+  image="$(staged_image "$build")"
+  volume_root="$(dirname "$(store_dir)")"
+  relative="${image#"$volume_root"/}"
+  mkdir -p "$state_dir"
+  touch "$manifest"
+  if awk -F'\t' -v b="$build" '$1 == b {found = 1} END {exit !found}' "$manifest"; then
+    die "$build is already in the manifest"
+  fi
+  printf '%s\t%s\t%s\n' "$build" "$SRO_VOLUME_UUID" "$relative" >>"$manifest"
+  note "Enabled $build ($relative on volume $SRO_VOLUME_UUID)"
+}
+
+cmd_disable() {
+  local build="${1:?usage: sro.sh disable <build>}"
+  [ -f "$manifest" ] || die "the manifest is empty"
+  local tmp
+  tmp="$(mktemp -t sro-manifest)"
+  awk -F'\t' -v b="$build" '$1 != b' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  note "Disabled $build (its mount and link, if any, are untouched; use detach)"
+}
+
+# sync_one <build> <volume uuid> <relative image path>
+sync_one() {
+  local build="$1" uuid="$2" relative="$3"
+  local mount_point link volume_root image
+  mount_point="$mount_root/$build"
+  link="$profiles_dir/offload-$build.simruntime"
+
+  volume_root="$(diskutil info "$uuid" 2>/dev/null | sed -n 's/^ *Mount Point: *//p')"
+  image="$volume_root/$relative"
+
+  if [ -n "$volume_root" ] && [ -f "$image" ]; then
+    if mount | grep -qF " on $mount_point ("; then
+      if [ -L "$link" ] && [ -e "$link" ]; then
+        echo "$build: already attached"
+      else
+        echo "$build: mounted but not linked; leaving it alone (use detach, then sync)"
+      fi
+    else
+      attach_image "$build" "$image"
+    fi
+    return
+  fi
+
+  # The volume, or the image on it, is absent. A dangling link makes every
+  # simctl invocation print a warning, so remove ours.
+  if [ -L "$link" ] && [ ! -e "$link" ]; then
+    note "$build: volume absent; removing dangling link $link"
+    run rm "$link"
+  else
+    echo "$build: volume absent; nothing to do"
+  fi
+}
+
+cmd_sync() {
+  [ -s "$manifest" ] || { echo "manifest is empty; nothing to sync"; return; }
+  echo "--- sync $(date '+%Y-%m-%d %H:%M:%S')"
+
+  # launchd starts the agent for every mount, including the ones sync itself
+  # makes. A lock keeps runs from overlapping; a stale lock is taken over.
+  local lock="$state_dir/sync.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    local holder
+    holder="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+      echo "another sync (pid $holder) is running; exiting"
+      return
+    fi
+    echo "taking over a stale lock"
+  fi
+  echo "$$" >"$lock/pid"
+  # shellcheck disable=SC2064  # expand now: the path must not change later
+  trap "rm -rf '$lock'" EXIT
+
+  local build uuid relative failures=0
+  while IFS=$'\t' read -r build uuid relative; do
+    [ -n "$build" ] || continue
+    # One runtime failing must not stop the others.
+    if ! (sync_one "$build" "$uuid" "$relative"); then
+      echo "$build: sync failed"
+      failures=$((failures + 1))
+    fi
+  done <"$manifest"
+  [ "$failures" -eq 0 ] || exit 1
+}
+
+# --- LaunchAgent ---------------------------------------------------------------
+# A per-user agent, not a daemon: everything it does is unprivileged.
+# StartOnMount makes launchd run it whenever any filesystem is mounted, so a
+# volume that arrives after login is handled without polling.
+
+cmd_agent() {
+  local action="${1:-status}"
+  local domain
+  domain="gui/$(id -u)"
+  case "$action" in
+    install)
+      mkdir -p "$state_dir" "$agent_log_dir" "$(dirname "$agent_plist")"
+      # The agent runs a copy, so moving or editing the working tree cannot
+      # change what launchd executes.
+      cp "$0" "$agent_script"
+      chmod 755 "$agent_script"
+      # launchd must start our own executable rather than /bin/bash: a
+      # background job's access to a removable volume is attributed to the job's
+      # program, and for a platform binary it is refused without a prompt.
+      local source_dir
+      source_dir="$(cd "$(dirname "$0")" && pwd)"
+      [ -f "$source_dir/agent/sro-agent.swift" ] || die "agent/sro-agent.swift not found next to $0"
+      note "Building the agent launcher"
+      xcrun swiftc -O -o "$agent_binary" "$source_dir/agent/sro-agent.swift"
+      codesign --force --sign - --identifier "$agent_label" "$agent_binary"
+      cat >"$agent_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$agent_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$agent_binary</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SRO_MOUNT_ROOT</key>
+    <string>$mount_root</string>
+    <key>SRO_LINK_DIR</key>
+    <string>$profiles_dir</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartOnMount</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>$agent_log_dir/agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>$agent_log_dir/agent.log</string>
+</dict>
+</plist>
+PLIST
+      plutil -lint "$agent_plist" >/dev/null
+      launchctl bootout "$domain/$agent_label" 2>/dev/null || true
+      launchctl bootstrap "$domain" "$agent_plist"
+      note "Installed $agent_label (log: $agent_log_dir/agent.log)"
+      ;;
+    uninstall)
+      launchctl bootout "$domain/$agent_label" 2>/dev/null || true
+      rm -f "$agent_plist" "$agent_script" "$agent_binary"
+      note "Uninstalled $agent_label (manifest, mounts and links are untouched)"
+      ;;
+    status)
+      if launchctl print "$domain/$agent_label" >/dev/null 2>&1; then
+        launchctl print "$domain/$agent_label" | grep -E '^\s*(state|runs|last exit code) =' || true
+      else
+        echo "agent not loaded"
+      fi
+      if [ -f "$manifest" ]; then cat "$manifest"; else echo "(no manifest)"; fi
+      ;;
+    *) die "usage: sro.sh agent install|uninstall|status" ;;
+  esac
+}
+
 case "${1:-}" in
   status) cmd_status ;;
   stage) shift; cmd_stage "$@" ;;
   attach) shift; cmd_attach "$@" ;;
   detach) shift; cmd_detach "$@" ;;
+  enable) shift; cmd_enable "$@" ;;
+  disable) shift; cmd_disable "$@" ;;
+  sync) cmd_sync ;;
+  agent) shift; cmd_agent "$@" ;;
   *)
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
     exit 64
     ;;
 esac

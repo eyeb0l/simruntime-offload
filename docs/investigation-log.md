@@ -302,3 +302,27 @@ an eject retry and stale-link replacement.
 
 Mistake recorded: a device was shut down and its runtime force-unmounted while
 the project owner's Xcode debugger was attached to an app on it.
+
+---
+
+## Session 6 — 2026-11-10 — login agent; last internal runtime removed; DeviceKit
+
+Full results:
+[results/2026-11-10/agent-rc-delete-devicekit.md](results/2026-11-10/agent-rc-delete-devicekit.md).
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H31 | A shell-script LaunchAgent can attach an image from a removable volume. | **Refuted.** Refused without a prompt; attributed to `/bin/bash`. (V) |
+| H32 | A native launcher as the job's executable gets a consent prompt instead. | **Confirmed.** (V) |
+| H33 | `StartOnMount` re-attaches after an unrelated mount, without polling. | **Confirmed**, 3 s. (V) |
+| H34 | `simctl runtime delete` always reclaims the asset. | **Refuted.** A superseded build needed scan-and-mount and a second delete. (V) |
+| H35 | Builds work with no internally installed iOS runtime. | **Confirmed** for `xcodebuild`; Xcode's interface not yet observed. (V) |
+| H36 | `/Library/Developer/DeviceKit/Runtimes` is loaded as a runtime directory. | **Confirmed.** (V) |
+| H26 | A home-independent registration clears Xcode's "unavailable" label. | **Open**; needs the interface, probably after `CoreDeviceService` restarts. |
+
+Decisions: the agent's executable is a native launcher; links now live in
+`/Library/Developer/DeviceKit/Runtimes` on this machine; the harness's default
+link directory is unchanged until H26 is settled.
+
+Mistakes recorded: the SSD copy of 24B114 was removed without gating on the
+internal delete's success; the errexit bug in `sync`.
