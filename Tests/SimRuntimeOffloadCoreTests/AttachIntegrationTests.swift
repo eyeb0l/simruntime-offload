@@ -43,7 +43,7 @@ final class AttachIntegrationTests: ScratchTestCase {
         let mountPoint = paths.mountPoint(forBuild: "TEST")
         let link = "\(sharedLinks)/offload-TEST.simruntime"
 
-        XCTAssertEqual(try sync.run(manifest: manifest, runtimes: []).map(\.result), [.attached])
+        XCTAssertEqual(try sync.run(manifest: manifest, registeredRuntimes: { [] }).map(\.result), [.attached])
 
         let fileSystem = FileSystem()
         XCTAssertTrue(fileSystem.isMountPoint(mountPoint))
@@ -59,7 +59,7 @@ final class AttachIntegrationTests: ScratchTestCase {
 
         // A second sync finds it attached and linked, and waits for CoreSimulator
         // (which will never list a fake runtime) rather than attaching again.
-        guard case .needsAttention? = try sync.run(manifest: manifest, runtimes: []).first?.result else {
+        guard case .needsAttention? = try sync.run(manifest: manifest, registeredRuntimes: { [] }).first?.result else {
             return XCTFail("expected needsAttention on the second run")
         }
 

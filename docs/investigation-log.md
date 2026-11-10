@@ -433,3 +433,30 @@ canonicalises with realpath(3).
 
 Nothing built so far changes the machine when run as a command. The harness
 and its agent are still what serve the runtimes.
+
+---
+
+## Session 12 — 2026-11-10 — native tool, build step 4
+
+Built, with 92 tests passing: the agent installer, adoption of the harness's
+state, and the `setup` and `sync` commands. The reconcile step now asks
+CoreSimulator for its runtime list only when a runtime is already attached and
+linked, so at login the agent attaches without first waiting for `simctl`.
+
+Applied to the development machine:
+
+| Step | Result |
+|---|---|
+| `setup --dry-run` | Listed exactly what would change; changed nothing. |
+| `setup` (release build) | Manifest written from the harness's two entries, with checksums, sizes and names filled in. A copy of the tool installed under Application Support. The harness's agent replaced by the native one under the same label. |
+| First agent run | Both runtimes "already active". |
+| Detach iOS 27.0, then an unrelated mount event | The native agent attached and linked it 3 s after the event. |
+| Device boot from that runtime | 8 s; app launched. |
+| `doctor` | Every check ok. |
+| Harness `eject`, dry run | Still plans the full sequence: the harness can manage what the native tool set up. |
+
+Not yet observed: whether macOS asked for consent again for the new agent
+program. The attach did not visibly wait.
+
+Decision: `setup` prints the commands for the one privileged step instead of
+running `sudo`, so that no code path in the tool ever asks for a password.

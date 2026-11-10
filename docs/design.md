@@ -123,9 +123,9 @@ before the next begins, and each of which can be undone until the one marked
 1. Preflight (§7). Stop on any failure.
 2. Choose the volume: list external APFS volumes with their UUIDs and free
    space; the user picks one. Record the UUID, never the name.
-3. Explain the privileged step and ask. If accepted, run
-   `sudo mkdir` and `chown` for `/Library/Developer/DeviceKit/Runtimes` (§6).
-   If declined, use the per-user link directory and say what that costs.
+3. If `/Library/Developer/DeviceKit/Runtimes` is missing, print the two
+   commands that create it (§6) and what declining costs, and continue with
+   the per-user link directory. The tool does not run `sudo` itself.
 4. Install the agent and start it once.
 5. Run `doctor` and print the result.
 
@@ -299,9 +299,17 @@ In priority order. The first three affect the design.
 
 ## 11. Build plan
 
-Progress: steps 1–3 are built and tested (`doctor`, `list`, and the attach,
-link and reconcile core). Nothing built so far changes the machine when run as
-a command; step 4 is the first that does.
+Progress: steps 1–4 are built and tested. `doctor`, `list`, `setup` and `sync`
+exist, and on the development machine the native agent has replaced the
+harness's. Offloading, restoring and ejecting are still done with the harness,
+whose state `setup` adopts and which can still manage everything the native
+tool has set up.
+
+Differences from this plan so far:
+- `setup` does not run `sudo` itself. It prints the two commands that create
+  the shared link directory and asks the user to run them. Nothing in the tool
+  ever asks for a password.
+- `setup` does not yet choose a volume; that arrives with `offload`.
 
 1. Package skeleton, `Support`, `Preflight`, `doctor`. Unit tests.
 2. `Simulators`, `Volume`, `Manifest`, `list`. Unit tests with fixtures.

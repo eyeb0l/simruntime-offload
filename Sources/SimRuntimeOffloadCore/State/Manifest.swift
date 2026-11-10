@@ -104,10 +104,18 @@ public struct ManifestStore {
         if FileManager.default.fileExists(atPath: paths.manifest) {
             return (try load(), .manifest)
         }
-        if let text = try? String(contentsOfFile: paths.harnessManifest, encoding: .utf8) {
-            return (Manifest(runtimes: ManifestStore.parseHarness(text)), .harness)
+        if let harness = harnessRuntimes() {
+            return (Manifest(runtimes: harness), .harness)
         }
         return (Manifest(), .none)
+    }
+
+    /// What the experiment harness recorded, or `nil` if it left no state.
+    public func harnessRuntimes() -> [OffloadedRuntime]? {
+        guard let text = try? String(contentsOfFile: paths.harnessManifest, encoding: .utf8) else {
+            return nil
+        }
+        return ManifestStore.parseHarness(text)
     }
 
     /// The harness kept one line per runtime: build, volume UUID and image

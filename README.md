@@ -7,9 +7,10 @@ external storage, reliably enough that it could be trusted for everyday
 development.
 
 **Status: the mechanism is proven on one machine; the native tool is under
-construction.** Its read-only commands (`doctor`, `list`) work. Offloading is
-still done by a shell harness in `experiments/`, which serves two runtimes from
-an external SSD on macOS 27.2 / Xcode 27.2. Do not run either on a machine you
+construction.** `doctor`, `list`, `setup` and `sync` work, and its login agent
+keeps two runtimes served from an external SSD on macOS 27.2 / Xcode 27.2.
+Offloading, restoring and ejecting are still done by a shell harness in
+`experiments/`. Do not run either on a machine you
 care about without reading the assessment first.
 
 ```

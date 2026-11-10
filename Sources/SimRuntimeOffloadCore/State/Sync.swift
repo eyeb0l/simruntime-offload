@@ -62,10 +62,25 @@ public struct Sync {
 
     /// Reconciles every runtime in `manifest`. One runtime failing does not
     /// stop the others. Throws only when no work could be attempted.
-    public func run(manifest: Manifest, runtimes: [Runtime]) throws -> [SyncOutcome] {
+    ///
+    /// `registeredRuntimes` is called at most once, and only if some runtime is
+    /// already attached and linked. At login nothing is, so the agent attaches
+    /// without first waiting for CoreSimulator to start.
+    public func run(
+        manifest: Manifest,
+        registeredRuntimes: () throws -> [Runtime]
+    ) throws -> [SyncOutcome] {
         guard !manifest.runtimes.isEmpty else { return [] }
         let lock = try acquireLock()
         defer { close(lock) }
+
+        var cached: [Runtime]?
+        func runtimes() throws -> [Runtime] {
+            if let cached { return cached }
+            let fetched = try registeredRuntimes()
+            cached = fetched
+            return fetched
+        }
 
         return manifest.runtimes.map { runtime in
             do {
@@ -76,8 +91,15 @@ public struct Sync {
         }
     }
 
-    private func reconcile(_ runtime: OffloadedRuntime, runtimes: [Runtime]) throws -> SyncOutcome.Result {
-        let status = inventory.status(of: runtime, runtimes: runtimes)
+    private func reconcile(
+        _ runtime: OffloadedRuntime, runtimes: () throws -> [Runtime]
+    ) throws -> SyncOutcome.Result {
+        // Without the runtime list the furthest a status can get is
+        // "not registered"; only then is CoreSimulator consulted.
+        var status = inventory.status(of: runtime, runtimes: [])
+        if status.state == .notRegistered {
+            status = inventory.status(of: runtime, runtimes: try runtimes())
+        }
         let mountPoint = paths.mountPoint(forBuild: runtime.build)
 
         switch status.state {

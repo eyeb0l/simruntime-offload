@@ -216,7 +216,30 @@ public struct Doctor {
 
     func state() -> Check {
         if probe.fileKind(at: paths.manifest) == .file {
-            return Check(id: "state", status: .ok, summary: "Manifest found at \(paths.manifest).")
+            let store = ManifestStore(paths: paths)
+            guard let manifest = try? store.load() else {
+                return Check(
+                    id: "state",
+                    status: .failure,
+                    summary: "\(paths.manifest) could not be read.",
+                    remedy: "It may be damaged or written by a newer version. Nothing will be changed until this is resolved."
+                )
+            }
+            // Until the native tool can offload by itself, the harness is what
+            // changes the set of runtimes; make drift between the two visible.
+            if let harness = store.harnessRuntimes() {
+                if Set(harness.map(\.build)) != Set(manifest.runtimes.map(\.build)) {
+                    return Check(
+                        id: "state",
+                        status: .warning,
+                        summary: "The experiment harness and the manifest list different runtimes.",
+                        remedy: "Run `simruntime-offload setup` to adopt the harness's current list."
+                    )
+                }
+            }
+            return Check(
+                id: "state", status: .ok,
+                summary: "Manifest lists \(manifest.runtimes.count) offloaded runtime(s).")
         }
         if probe.fileKind(at: paths.harnessManifest) == .file {
             return Check(

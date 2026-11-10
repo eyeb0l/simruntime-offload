@@ -26,6 +26,13 @@ public struct Paths: Sendable {
     public var stateDirectory: String { "\(home)/Library/Application Support/simruntime-offload" }
     public var manifest: String { "\(stateDirectory)/manifest.json" }
     public var logDirectory: String { "\(home)/Library/Logs/simruntime-offload" }
+    public var agentLog: String { "\(logDirectory)/agent.log" }
+
+    /// Where `setup` installs a copy of the tool for the login agent to run,
+    /// so that the agent does not depend on a build directory, and so that its
+    /// identity, which the consent to read removable volumes is tied to,
+    /// changes only when the tool is deliberately updated.
+    public var installedExecutable: String { "\(stateDirectory)/bin/simruntime-offload" }
     public var agentPropertyList: String { "\(home)/Library/LaunchAgents/\(Paths.agentLabel).plist" }
 
     /// State left by the shell harness in `experiments/`, which `setup` adopts.

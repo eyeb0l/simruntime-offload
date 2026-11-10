@@ -63,12 +63,12 @@ final class SyncTests: ScratchTestCase {
         return try Sync(
             paths: paths, attacher: attacher, fileSystem: attacher,
             volumeLookup: { [volumeConnected] _ in volumeConnected ? volume : nil }
-        ).run(manifest: Manifest(runtimes: [entry]), runtimes: runtimes)
+        ).run(manifest: Manifest(runtimes: [entry]), registeredRuntimes: { runtimes })
     }
 
     func testAnEmptyManifestDoesNothing() throws {
         let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in nil })
-            .run(manifest: Manifest(), runtimes: [])
+            .run(manifest: Manifest(), registeredRuntimes: { [] })
         XCTAssertEqual(outcomes, [])
         XCTAssertFalse(files.fileExists(atPath: paths.stateDirectory), "nothing should be created")
     }
@@ -83,6 +83,26 @@ final class SyncTests: ScratchTestCase {
         _ = try sync()
         let mode = try files.attributesOfItem(atPath: mountRoot)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o700)
+    }
+
+    func testDoesNotConsultCoreSimulatorWhenNothingIsAttachedYet() throws {
+        let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
+        var asked = 0
+        let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
+            .run(manifest: Manifest(runtimes: [entry]), registeredRuntimes: { asked += 1; return [] })
+        XCTAssertEqual(outcomes.map(\.result), [.attached])
+        XCTAssertEqual(asked, 0, "at login the agent should attach without waiting for simctl")
+    }
+
+    func testAFailureToAskCoreSimulatorIsReportedForThatRuntime() throws {
+        _ = try sync()
+        let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
+        let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
+            .run(manifest: Manifest(runtimes: [entry]), registeredRuntimes: {
+                throw SimulatorsError.unreadableOutput(command: "xcrun simctl list runtimes -j")
+            })
+        guard case .failed(let message)? = outcomes.first?.result else { return XCTFail("expected failed") }
+        XCTAssertTrue(message.contains("simctl"))
     }
 
     func testIsIdempotentOnceCoreSimulatorListsTheRuntime() throws {
@@ -177,7 +197,7 @@ final class SyncTests: ScratchTestCase {
         let outcomes = try Sync(
             paths: paths, attacher: attacher, fileSystem: attacher,
             volumeLookup: { $0 == self.uuid ? volume : nil }
-        ).run(manifest: Manifest(runtimes: [missing, entry]), runtimes: [])
+        ).run(manifest: Manifest(runtimes: [missing, entry]), registeredRuntimes: { [] })
         XCTAssertEqual(outcomes.map(\.result), [.waitingForVolume, .attached])
     }
 }
