@@ -78,7 +78,9 @@ Sources/SimRuntimeOffloadCore/        everything testable; no user-facing text
               StateLock               the lock that keeps sync and eject from overlapping
               Adoption                first-time import of the experiment harness's state
               Offload                 the `offload` flow
-              Eject                   the `eject` flow
+              Eject                   the `eject` flow, and the release step it shares
+              Restore                 the `restore` flow
+              Uninstall               the `uninstall` flow
   Support/    ProcessRunner, Version
 Sources/simruntime-offload/           argument parsing and user-facing text only
 Tests/SimRuntimeOffloadCoreTests/     unit tests, recorded fixtures, one integration test
@@ -170,18 +172,38 @@ build is still registered from the internal disk.
 Validated: re-import takes under a minute, needs no network, and Xcode then
 shows the platform as installed.
 
-1. Preflight. Refuse if a simulator using the runtime is booted. Check
-   internal free space (image size plus headroom).
-2. Remove the manifest entry, so the agent cannot re-attach it; unlink and
-   eject the offload mount (as in 5.5, for this one runtime).
-3. `xcrun simctl runtime add <image on the volume>`. Never with `--move`.
-4. `xcrun simctl runtime scan-and-mount`, to clear the clone the import leaves
+1. Preflight. Refuse if any simulator is booted. Require the volume, the
+   image, and internal free space (image size plus headroom).
+2. SHA-256 the image on the volume and compare with the manifest. On a
+   mismatch stop: nothing has been touched and the runtime is still served.
+3. Take the state lock. Mark the manifest entry *staged*, so that neither the
+   agent nor a later `sync` attaches the build while it is being imported.
+4. Unlink and eject the offload mount (as in 5.5, for this one runtime).
+5. `xcrun simctl runtime add <image on the volume>`. Never with `--move`.
+6. `xcrun simctl runtime scan-and-mount`, to clear the clone the import leaves
    in the daemon's inbox (hazard 10).
-5. Verify: the build is registered as a disk image, state Ready.
-6. The image on the volume is kept unless `--delete-image` is given.
+7. Verify: the build is registered as a disk image, state Ready. Only then
+   remove the manifest entry.
+8. The image on the volume is kept unless `--delete-image` is given, and is
+   deleted only after step 7.
+9. Verify that CoreSimulator lists the runtime from somewhere other than the
+   offload mount; if it does not, restart the per-user service once.
 
-If step 3 fails, re-add the manifest entry and run `Sync`, which returns the
-machine to the offloaded state.
+If step 4 or 5 fails, clear the staged mark and run `Sync`, which returns the
+machine to the offloaded state. If step 7 fails the entry stays staged and the
+image stays on the volume; running `restore` again finishes the job, importing
+nothing if the build has become ready in the meantime.
+
+As built this differs from the first design in two ways. The entry is marked
+staged and kept until the import is confirmed, rather than removed first: a
+process killed mid-restore then leaves a record that `restore` can resume
+from, instead of an image the tool has forgotten. And the checksum in step 2
+was added, so that a damaged image is discovered before the working runtime
+is taken away rather than after.
+
+`offload` of a runtime restored this way finds the image still on the volume
+(under its original file name, which differs from the name CoreSimulator gives
+the import) and reuses it after comparing checksums, instead of copying again.
 
 ### 5.4 `Sync` (run by the agent and after every change)
 
@@ -220,9 +242,25 @@ message says what to try instead.
 
 ### 5.6 `uninstall`
 
-`restore` every runtime (or, with `--leave-runtimes-on-volume`, just stop
-serving them), remove the agent, the manifest, the log and the mount root, and
-print the one command that removes the `DeviceKit/Runtimes` directory.
+1. Plan a `restore` for every runtime before starting any, so that a missing
+   volume or image, or too little internal space for all of them together,
+   stops the uninstall with nothing changed.
+2. Restore each. Images on the volume are never deleted by `uninstall`.
+3. Remove the agent, then the tool's own files by name: the manifest, the lock
+   file, the installed program, the log. Remove its directories and the
+   per-build mount points with rmdir(2), which succeeds only when they are
+   empty. Anything found that the tool did not put there is left and named.
+4. Print the one command that removes the `DeviceKit/Runtimes` directory.
+   The tool does not run it: it needs root.
+
+With `--leave-runtimes-on-volume`, step 2 is replaced by removing the agent
+first and then releasing each runtime as in 5.5. This works with the volume
+unplugged. The runtimes are then installed nowhere; the command line says so
+and gives the `simctl runtime add` command that installs an image again.
+
+`restore`, `eject` and `uninstall` are deliberately not gated on the version
+check (invariant 8). After a system update that this tool does not recognise,
+the way out is the one thing that must still be available.
 
 ## 6. Privilege, consent and safety
 
@@ -323,11 +361,11 @@ In priority order. The first three affect the design.
 
 ## 11. Build plan
 
-Progress: steps 1–5 are built and tested. `doctor`, `list`, `setup`, `sync`,
-`offload` and `eject` exist. On the development machine the native agent has
+Progress: steps 1–6 are built and tested. Every command in §2 exists. On the development machine the native agent has
 replaced the harness's, and a third runtime was offloaded with the native tool
-alone and all three were then released with the native `eject`. Restoring and
-uninstalling are still to come.
+alone and all three were then released with the native `eject`. `restore` and
+`uninstall` are built; `restore` has been run for real, `uninstall` only as a
+dry run, because a real one would move the project owner's own runtimes.
 
 Differences from this plan so far:
 - `setup` does not run `sudo` itself. It prints the two commands that create
@@ -342,6 +380,10 @@ Differences from this plan so far:
   runtime, and `doctor` recommended exactly that until this step's test showed it.
 - `offload` refuses while any simulator is booted, rather than skipping the
   service restart.
+- `restore` keeps a staged manifest entry until the import is confirmed, and
+  checks the image's checksum first (§5.3).
+- `--allow-unvalidated-version` does not exist yet. `offload` and `setup`
+  refuse on an unvalidated version; the commands that undo things do not check.
 
 1. Package skeleton, `Support`, `Preflight`, `doctor`. Unit tests.
 2. `Simulators`, `Volume`, `Manifest`, `list`. Unit tests with fixtures.

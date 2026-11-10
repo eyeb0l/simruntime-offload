@@ -35,7 +35,6 @@ public struct Ejector {
     private let attacher: ImageAttaching
     private let services: ServiceControlling
     private let fileSystem: FileSystemProbing
-    private let registry: Registry
     private let volumeLookup: (String) -> Volume?
     private let ejectVolume: (String) -> String?
     private let pause: (TimeInterval) -> Void
@@ -57,7 +56,6 @@ public struct Ejector {
         self.attacher = attacher
         self.services = services
         self.fileSystem = fileSystem
-        self.registry = Registry(paths: paths)
         self.volumeLookup = volumeLookup
         self.ejectVolume = ejectVolume
         self.pause = pause
@@ -73,16 +71,15 @@ public struct Ejector {
         let lock = try acquireLock()
         defer { lock.release() }
 
+        let releaser = Releaser(
+            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause)
         for runtime in manifest.runtimes {
-            let mountPoint = paths.mountPoint(forBuild: runtime.build)
-            // Unregister first; CoreSimulator unloads the runtime when the
-            // link goes and again when asked to approve the unmount.
-            report(.unregistering(build: runtime.build))
-            try registry.unlink(build: runtime.build)
-            guard fileSystem.isMountPoint(mountPoint) else { continue }
-            pause(1)
-            services.restartLaunchHost()
-            try release(mountPoint, build: runtime.build, forceUnmount: forceUnmount)
+            let build = runtime.build
+            report(.unregistering(build: build))
+            switch try releaser.release(build: build, forceUnmount: forceUnmount, willForce: { report(.forcing(build: build)) }) {
+            case .notAttached, .forced: break
+            case .ejected(let attempts): report(.ejected(build: build, attempts: attempts))
+            }
         }
 
         var seen = Set<String>()
@@ -105,23 +102,53 @@ public struct Ejector {
         }
         return try StateLock.acquire(paths: paths)
     }
+}
 
-    private func release(_ mountPoint: String, build: String, forceUnmount: Bool) throws {
+/// Stops serving one runtime: removes its link and ejects its image.
+///
+/// Shared by `eject`, `restore` and `uninstall`. The caller is responsible
+/// for having checked that no simulator is booted, and for holding the state
+/// lock so that the agent does not re-attach what is released here.
+struct Releaser {
+    enum Outcome: Equatable {
+        case notAttached
+        case ejected(attempts: Int)
+        case forced
+    }
+
+    let paths: Paths
+    let attacher: ImageAttaching
+    let services: ServiceControlling
+    let fileSystem: FileSystemProbing
+    let pause: (TimeInterval) -> Void
+
+    /// Throws `EjectError.stillInUse` when the image stays busy and
+    /// `forceUnmount` is false. The link is already gone by then.
+    func release(build: String, forceUnmount: Bool, willForce: () -> Void = {}) throws -> Outcome {
+        let mountPoint = paths.mountPoint(forBuild: build)
+        // Unregister first; CoreSimulator unloads the runtime when the link
+        // goes and again when asked to approve the unmount.
+        try Registry(paths: paths).unlink(build: build)
+        guard fileSystem.isMountPoint(mountPoint) else { return .notAttached }
+        pause(1)
+        // The launch helper keeps a library from the runtime mapped.
+        services.restartLaunchHost()
+
         // A shut-down simulator's processes can take a few seconds to exit,
         // longer under a debugger; retrying tells that apart from a real hold.
         var lastMessage = ""
         for attempt in 1...6 {
             do {
                 try attacher.eject(mountPoint: mountPoint)
-                report(.ejected(build: build, attempts: attempt))
-                return
+                return .ejected(attempts: attempt)
             } catch let AttachError.busy(_, message) {
                 lastMessage = message
                 pause(2)
             }
         }
         guard forceUnmount else { throw EjectError.stillInUse(build: build, message: lastMessage) }
-        report(.forcing(build: build))
+        willForce()
         try attacher.forceEject(mountPoint: mountPoint)
+        return .forced
     }
 }

@@ -11,9 +11,11 @@ public struct OffloadedRuntime: Codable, Equatable, Sendable {
     public var sha256: String?
     public var sizeBytes: Int64?
     public var offloadedAt: Date?
-    /// True while the image has been copied to the volume but the internal copy
-    /// has not yet been removed. A staged runtime is never attached, because
-    /// the same build must not be registered twice.
+    /// True while the same build is, or may be, registered from the internal
+    /// disk: during an offload, from the verified copy until the internal copy
+    /// is confirmed gone, and during a restore, from before the image is
+    /// released until the import is confirmed. A staged runtime is never
+    /// attached, because the same build must not be registered twice.
     public var staged: Bool?
 
     public var isStaged: Bool { staged ?? false }

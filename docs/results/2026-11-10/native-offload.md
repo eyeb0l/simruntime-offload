@@ -90,6 +90,10 @@ runtime itself or to its being served from the volume. `restore` (build step
 The second boot of the same device (3 s) printed it again, so it is not a
 first-boot effect.
 
+Resolved later the same day: with the runtime restored to the internal disk, a
+fresh device printed the same message. It belongs to this runtime build. See
+`native-restore.md`.
+
 ## The native `eject`
 
 Run three ways, with the project owner present for the real ones.

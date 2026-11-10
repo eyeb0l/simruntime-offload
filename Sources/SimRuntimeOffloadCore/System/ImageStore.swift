@@ -28,6 +28,9 @@ public protocol ImageStoring {
         from source: String, to destination: String, progress: (Int64, Int64) -> Void
     ) throws -> String
     func sha256(ofFile path: String) throws -> String
+    /// Deletes an image this tool stored, with the checksum file beside it,
+    /// and the directory they were in if that leaves it empty.
+    func removeImage(at path: String) throws
 }
 
 public struct ImageStore: ImageStoring {
@@ -84,6 +87,16 @@ public struct ImageStore: ImageStoring {
 
     public func sha256(ofFile path: String) throws -> String {
         try sha256(ofFile: path, uncached: false)
+    }
+
+    /// Removes exactly two named files and then, without recursion, the
+    /// directory. Anything else in the directory keeps it in place.
+    public func removeImage(at path: String) throws {
+        let directory = (path as NSString).deletingLastPathComponent
+        try files.removeItem(atPath: path)
+        let sums = (directory as NSString).appendingPathComponent("SHA256SUMS")
+        if files.fileExists(atPath: sums) { try files.removeItem(atPath: sums) }
+        rmdir(directory)
     }
 
     func sha256(ofFile path: String, uncached: Bool) throws -> String {

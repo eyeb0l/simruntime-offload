@@ -35,7 +35,7 @@ public enum OffloadError: Error, Equatable, CustomStringConvertible {
         case .notEnoughSpace(let needed, let free):
             return "the volume has \(free / 1_000_000_000) GB free; \(needed / 1_000_000_000) GB is needed"
         case .destinationDiffers(let path):
-            return "\(path) already exists and is not a copy of this runtime; it has been left alone"
+            return "\(path) already exists and is not a copy of this runtime; it has been left alone. Move or delete it, then run the command again"
         case .notReclaimed(let build):
             return "the copy on the volume is verified, but macOS did not release the internal copy of \(build). It is still installed and usable. Run `simruntime-offload offload \(build)` again later to finish"
         case .notServed(let build):
@@ -141,7 +141,15 @@ public struct Offloader {
         guard !volume.isInternal else { throw OffloadError.internalVolume(name: volume.name) }
 
         let source = try imageFile(of: image)
-        let relative = "SimRuntimes/\(image.build)/\((source as NSString).lastPathComponent)"
+        // A runtime restored from this volume and offloaded again has a new
+        // file name internally (CoreSimulator names imports by UUID), while
+        // its image may still be on the volume under the old one. Aim at that
+        // file: `run` reuses it if it is the same image and stops if it is not,
+        // rather than putting a second copy beside it.
+        let directory = "SimRuntimes/\(image.build)"
+        let present = fileSystem.contentsOfDirectory("\(volumeRoot)/\(directory)").filter { $0.hasSuffix(".dmg") }
+        let fileName = present.count == 1 ? present[0] : (source as NSString).lastPathComponent
+        let relative = "\(directory)/\(fileName)"
         let destination = "\(volumeRoot)/\(relative)"
 
         if !fileSystem.fileExists(destination), let size = image.sizeBytes, let free = volume.freeBytes {

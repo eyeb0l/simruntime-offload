@@ -6,11 +6,11 @@ An investigation into storing and running Xcode Simulator runtimes from
 external storage, reliably enough that it could be trusted for everyday
 development.
 
-**Status: the mechanism is proven on one machine; the native tool is under
-construction.** `doctor`, `list`, `setup`, `sync`, `offload` and `eject` exist,
-and its login agent keeps three runtimes served from an external SSD on macOS
-27.2 / Xcode 27.2. `restore` and `uninstall` are not built yet, so there is no
-native way back: do not run it on a machine you care about without reading the
+**Status: the mechanism is proven on one machine; the native tool is feature
+complete but has had no system test pass and no release.** Every command
+exists, and its login agent keeps two runtimes served from an external SSD on
+macOS 27.2 / Xcode 27.2. `uninstall` has only been run as a dry run on a real
+machine. Do not run any of it on a machine you care about without reading the
 assessment first.
 
 ```
@@ -20,10 +20,12 @@ swift test                                  # unit tests, plus one test that mou
 .build/debug/simruntime-offload list        # what is on the internal disk and what is offloaded
 .build/debug/simruntime-offload offload <build> --volume <UUID> --dry-run
 .build/debug/simruntime-offload eject --dry-run
+.build/debug/simruntime-offload restore <build> --dry-run
+.build/debug/simruntime-offload uninstall --dry-run
 ```
 
-`offload` and `eject` change the machine; both take `--dry-run`, which prints
-the plan and changes nothing.
+Every command that changes the machine takes `--dry-run`, which prints the
+plan and changes nothing.
 
 ## Documents
 
@@ -43,7 +45,7 @@ the plan and changes nothing.
 | Path | Purpose |
 |---|---|
 | `Sources/`, `Tests/` | The native tool: a Swift package with no dependencies. |
-| `experiments/sro.sh` | The harness the mechanism was developed with. Superseded by the native tool except for restoring; not the deliverable. |
+| `experiments/sro.sh` | The harness the mechanism was developed with. Superseded by the native tool; kept as the record of how the mechanism was found. |
 | `experiments/agent/` | The native launcher the login agent needs. |
 | `experiments/bench/` | Read benchmarks used to compare disk-image stacks. |
 | `fixtures/HelloSim/` | Minimal iOS app used to test build, install and launch. |

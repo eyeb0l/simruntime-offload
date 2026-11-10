@@ -24,6 +24,16 @@ final class FakeSimulators: SimulatorControlling {
         scans += 1
         onScan(self)
     }
+
+    private(set) var added: [String] = []
+    var addError: Error?
+    /// What an import does to the world; by default nothing is registered.
+    var onAdd: (FakeSimulators, String) -> Void = { _, _ in }
+    func addImage(path: String) throws {
+        added.append(path)
+        if let addError { throw addError }
+        onAdd(self, path)
+    }
 }
 
 final class FakeServices: ServiceControlling {
@@ -51,6 +61,12 @@ final class FakeImageStore: ImageStoring {
     }
 
     func sha256(ofFile path: String) throws -> String { checksums[path] ?? "same" }
+
+    private(set) var removed: [String] = []
+    func removeImage(at path: String) throws {
+        removed.append(path)
+        try FileManager.default.removeItem(atPath: path)
+    }
 }
 
 /// Real files, with chosen directories replaced by fixed listings.
@@ -320,6 +336,22 @@ final class OffloadTests: ScratchTestCase {
         XCTAssertTrue(imageStore.copies.isEmpty)
         XCTAssertTrue(events.contains(.reusingVerifiedCopy(path: destination)))
         XCTAssertEqual(simulators.deleted, ["AAAA-1111"])
+    }
+
+    func testReusesAnImageLeftOnTheVolumeUnderAnotherName() throws {
+        // As after `restore`, which keeps the image: the internal copy now
+        // has a different file name from the one on the volume.
+        let kept = "\(volumeRoot)/SimRuntimes/24A434/043-70362-657.dmg"
+        try files.createDirectory(atPath: (kept as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        files.createFile(atPath: kept, contents: Data("image".utf8))
+
+        let offloader = offloader()
+        let plan = try offloader.plan(runtime: "24A434", volumeUUID: uuid)
+        XCTAssertEqual(plan.destination, kept)
+        try offloader.run(plan)
+        XCTAssertTrue(imageStore.copies.isEmpty, "no second copy beside the first")
+        XCTAssertEqual(try savedEntry()?.imagePath, "SimRuntimes/24A434/043-70362-657.dmg")
+        XCTAssertEqual(try files.contentsOfDirectory(atPath: (kept as NSString).deletingLastPathComponent), ["043-70362-657.dmg"])
     }
 
     func testAnExistingFileThatIsNotACopyStopsEverything() throws {

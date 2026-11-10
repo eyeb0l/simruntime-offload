@@ -66,6 +66,9 @@ public protocol SimulatorControlling {
     /// Makes the disk-image daemon rescan its storage, which also clears its
     /// inbox of leftovers.
     func scanAndMount() throws
+    /// Imports a runtime image, copying it to the internal disk. The file
+    /// given is left where it is.
+    func addImage(path: String) throws
 }
 
 /// CoreSimulator, through its command-line tool.
@@ -97,6 +100,12 @@ public struct Simulators: SimulatorControlling {
 
     public func scanAndMount() throws {
         _ = try simctl(["runtime", "scan-and-mount"])
+    }
+
+    /// Never with `--move`: the image on the volume is the user's only other
+    /// copy until the import has been checked.
+    public func addImage(path: String) throws {
+        _ = try simctl(["runtime", "add", path])
     }
 
     private func simctl(_ arguments: [String]) throws -> Data {

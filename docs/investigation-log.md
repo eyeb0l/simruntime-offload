@@ -539,3 +539,44 @@ State left on the machine: three runtimes served from the volume (27.0, 27.1,
 27.2), no runtime on the internal disk, the step 5 agent loaded, and one more
 throwaway device, `sro-native-271`, shut down. The iOS 27.1 runtime is disposable and is kept as the subject for
 testing `restore`.
+
+---
+
+## Session 14 — 2026-11-10 — native tool, build step 6
+
+Built, with 159 tests passing: `restore` and `uninstall`. The release step
+(unlink, restart the launch helper, eject with retries, force only on request)
+was extracted from `eject` so that all three commands share one copy of it.
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H56 | The native `restore` returns a runtime to the internal disk and stops serving it, leaving the others alone. | **Confirmed** twice on iOS 27.1, 40 s and 41 s. (V) |
+| H57 | A runtime restored and then offloaded again reuses the image still on the volume. | **Refuted as first written** (it would have made a second copy under a new name); **confirmed** after the fix, 22 s with no copy. (V, one run) |
+| H50 | "Data Migration Failed" is caused by serving the runtime from the volume. | **Refuted.** The same message appears with the runtime on the internal disk. |
+| H58 | `restore --delete-image` removes only that build's image. | **Confirmed**; the other images still match their checksums. (V, one run) |
+
+Full write-up: `docs/results/2026-11-10/native-restore.md`.
+
+Decisions:
+
+- `restore` marks the entry staged and keeps it until the import is confirmed,
+  instead of removing it first as the design said. A killed process then
+  leaves something to resume from.
+- `restore` verifies the image's checksum before releasing the runtime, so a
+  damaged image costs the user nothing.
+- `uninstall` plans every restore before starting any, and never deletes an
+  image. It removes files by name and directories only when empty.
+- `restore`, `eject` and `uninstall` are not gated on the version check. The
+  way out has to work on a system the tool does not recognise.
+- A real `uninstall` was not run on the development machine. It would move the
+  project owner's own runtimes; that needs her approval, not mine.
+
+Not built: `--allow-unvalidated-version`, and any way to adopt an image that
+is already on a volume without first importing it. After
+`uninstall --leave-runtimes-on-volume` the only way to use such an image again
+is `simctl runtime add` followed by `offload`, which now reuses the file.
+
+State left on the machine: as at the start of step 5. Two runtimes served from
+the volume (27.0, 27.2), none on the internal disk. The iOS 27.1 runtime, its
+image on the volume, and the devices created for it are gone. The loaded agent
+is the build installed during step 5; its `sync` path is unchanged since.

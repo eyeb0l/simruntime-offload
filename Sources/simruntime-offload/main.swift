@@ -13,16 +13,21 @@ let usage = """
       simruntime-offload offload <runtime> [--volume <UUID>] [--dry-run]
                                             copy a runtime to the volume, verify it, remove the internal
                                             copy and serve it from the volume
+      simruntime-offload restore <runtime> [--delete-image] [--force-unmount] [--dry-run]
+                                            import a runtime back to the internal disk from its image
+                                            on the volume, and stop serving it from there
       simruntime-offload eject [--force-unmount] [--dry-run]
                                             release every offloaded runtime and the volume, to unplug it
+      simruntime-offload uninstall [--leave-runtimes-on-volume] [--force-unmount] [--dry-run]
+                                            restore every runtime, then remove the agent and all state
       simruntime-offload sync               attach what is available, tidy what is not; what the agent runs
       simruntime-offload --version
       simruntime-offload help
 
-    <runtime> is a build number or image identifier, as shown by `list`.
+    <runtime> is a build number, as shown by `list`.
 
-    This is a development build. Restoring a runtime to the internal disk is
-    not implemented yet. See docs/design.md for the plan.
+    Every command that changes anything takes --dry-run, which prints what it
+    would do and changes nothing. This is a development build.
     """
 
 func printError(_ message: String) {
@@ -376,8 +381,14 @@ func runOffload(arguments: [String]) -> Int32 {
         print("Copy to:  \(plan.destination)")
         if dryRun {
             print("")
-            print("Dry run: would copy and verify the image, remove the internal copy, restart the")
-            print("CoreSimulator service and attach the copy. Nothing was changed.")
+            if FileManager.default.fileExists(atPath: plan.destination) {
+                print("Dry run: a file is already there. It would be compared with the internal image and")
+                print("used only if identical; then the internal copy would be removed, the CoreSimulator")
+                print("service restarted and the copy attached. Nothing was changed.")
+            } else {
+                print("Dry run: would copy and verify the image, remove the internal copy, restart the")
+                print("CoreSimulator service and attach the copy. Nothing was changed.")
+            }
             return 0
         }
         print("")
@@ -451,8 +462,181 @@ func runEject(arguments: [String]) -> Int32 {
     }
 }
 
+/// The pieces `restore` and `uninstall` share.
+func makeRestorer(paths: Paths, report: @escaping (RestoreEvent) -> Void) -> Restorer {
+    let simulators = Simulators()
+    let volumes = Volumes()
+    return Restorer(
+        paths: paths,
+        simulators: simulators,
+        volumeLookup: volumes.volume(uuid:),
+        imageStore: ImageStore(),
+        attacher: Attacher(),
+        services: Services(userID: paths.userID),
+        sync: { manifest in
+            try Sync(paths: paths, volumeLookup: volumes.volume(uuid:))
+                .run(manifest: manifest, registeredRuntimes: { try simulators.runtimes() })
+        },
+        report: report)
+}
+
+func printRestoreEvent(_ event: RestoreEvent) {
+    switch event {
+    case .verifyingImage: print("Checking the image on the volume against its recorded checksum.")
+    case .alreadyInternal: print("This build is already installed on the internal disk; only stopping the copy on the volume.")
+    case .releasing: print("Unregistering the copy on the volume and ejecting its image.")
+    case .importing(let image): print("Importing \(image) to the internal disk.")
+    case .imported: print("CoreSimulator reports the import ready.")
+    case .restartingCoreSimulator: print("Restarting the CoreSimulator service so it lists the runtime from its new location.")
+    case .removedImage(let path): print("Deleted \(path).")
+    case .keptImage(let path): print("The image stays at \(path).")
+    case .done(let name): print("Done. \(name ?? "The runtime") is installed on the internal disk again.")
+    }
+}
+
+func runRestore(arguments: [String]) -> Int32 {
+    var runtime: String?
+    var deleteImage = false
+    var forceUnmount = false
+    var dryRun = false
+    for argument in arguments {
+        switch argument {
+        case "--delete-image": deleteImage = true
+        case "--force-unmount": forceUnmount = true
+        case "--dry-run": dryRun = true
+        default:
+            guard !argument.hasPrefix("-"), runtime == nil else {
+                printError("restore: unexpected argument \(argument)")
+                return 64
+            }
+            runtime = argument
+        }
+    }
+    guard let runtime else {
+        printError("restore: name the runtime to restore (a build number from `list`)")
+        return 64
+    }
+
+    // Deliberately not gated on the preflight checks: the way back must work
+    // even on a system version this tool no longer recognises.
+    let paths = Paths(home: NSHomeDirectory(), userID: getuid())
+    let restorer = makeRestorer(paths: paths, report: printRestoreEvent)
+    do {
+        let plan = try restorer.plan(runtime: runtime)
+        print("Runtime:  build \(plan.entry.build)\(plan.entry.name.map { ", \($0)" } ?? ""), \(formatSize(plan.entry.sizeBytes))")
+        print("Image:    \(plan.image) on \"\(plan.volume.name)\"")
+        if dryRun {
+            print("")
+            if plan.alreadyInternal {
+                print("Dry run: this build is already on the internal disk, so nothing would be imported;")
+                print("the copy on the volume would stop being served.")
+            } else {
+                print("Dry run: would check the image, stop serving it from the volume, and import it to")
+                print("the internal disk.")
+            }
+            print(deleteImage ? "The image on the volume would then be deleted." : "The image on the volume would be kept.")
+            print("Nothing was changed.")
+            return 0
+        }
+        print("")
+        try restorer.run(plan, deleteImage: deleteImage, forceUnmount: forceUnmount)
+        return 0
+    } catch {
+        printError("restore: \(error)")
+        return 1
+    }
+}
+
+func runUninstall(arguments: [String]) -> Int32 {
+    var leaveRuntimes = false
+    var forceUnmount = false
+    var dryRun = false
+    for argument in arguments {
+        switch argument {
+        case "--leave-runtimes-on-volume": leaveRuntimes = true
+        case "--force-unmount": forceUnmount = true
+        case "--dry-run": dryRun = true
+        default:
+            printError("uninstall: unknown option \(argument)")
+            return 64
+        }
+    }
+
+    let paths = Paths(home: NSHomeDirectory(), userID: getuid())
+    let volumes = Volumes()
+    let uninstaller = Uninstaller(
+        paths: paths,
+        simulators: Simulators(),
+        restorer: makeRestorer(paths: paths, report: printRestoreEvent),
+        attacher: Attacher(),
+        services: Services(userID: paths.userID),
+        agent: Agent(paths: paths),
+        volumeLookup: volumes.volume(uuid:),
+        report: { event in
+            switch event {
+            case .restoring(let build): print("\nRestoring \(build).")
+            case .restoredButNotListed(let build):
+                print("\(build) is imported; CoreSimulator will list it after your next login.")
+            case .stoppedServing(let build): print("Stopped serving \(build).")
+            case .removedAgent: print("\nRemoved the login agent.")
+            }
+        })
+    do {
+        let plan = try uninstaller.plan(leaveRuntimesOnVolume: leaveRuntimes)
+        if dryRun {
+            for restore in plan.restores {
+                print(restore.alreadyInternal
+                    ? "Would stop serving \(restore.entry.build) from the volume (it is already on the internal disk)."
+                    : "Would restore \(restore.entry.build) (\(formatSize(restore.entry.sizeBytes))) to the internal disk from \(restore.image).")
+            }
+            for runtime in plan.released {
+                print("Would stop serving \(runtime.build); its image would stay on the volume and the runtime would no longer be installed anywhere.")
+            }
+            print("Would remove the login agent and this tool's own files in \(paths.stateDirectory),")
+            print("\(paths.logDirectory) and \(paths.mountRoot). Anything else found there would be left and named.")
+            print("No image on a volume would be deleted.")
+            print("")
+            print("Dry run: nothing was changed.")
+            return 0
+        }
+        let summary = try uninstaller.run(plan, forceUnmount: forceUnmount)
+        print("")
+        for path in summary.removed { print("Removed \(path)") }
+        for item in summary.left { print("Left in place: \(item)") }
+        if !summary.imagesKept.isEmpty {
+            print("")
+            print("These images are still on the volume and are yours to keep or delete:")
+            for image in summary.imagesKept { print("  \(image)") }
+            if plan.leaveRuntimesOnVolume {
+                print("To install one again: xcrun simctl runtime add <image>")
+            }
+        }
+        if let directory = summary.sharedLinkDirectory {
+            print("")
+            print("One directory was created with sudo during setup and needs sudo to remove:")
+            print("  sudo rmdir \(directory)")
+        }
+        print("")
+        print("simruntime-offload is uninstalled.")
+        return 0
+    } catch let error as RestoreError {
+        printError("uninstall: \(error)")
+        if case .volumeNotConnected = error {
+            printError("Connect the volume, or use --leave-runtimes-on-volume to uninstall without restoring.")
+        }
+        return 1
+    } catch {
+        printError("uninstall: \(error)")
+        return 1
+    }
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
+case "restore":
+    exit(runRestore(arguments: Array(arguments.dropFirst())))
+case "uninstall":
+    exit(runUninstall(arguments: Array(arguments.dropFirst())))
 case "offload":
     exit(runOffload(arguments: Array(arguments.dropFirst())))
 case "eject":
