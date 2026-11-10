@@ -197,7 +197,14 @@ cmd_attach() {
   if mount | grep -qF " on $mount_point ("; then
     die "$mount_point is already mounted"
   fi
-  [ ! -L "$link" ] && [ ! -e "$link" ] || die "$link already exists"
+  # After a reboot the mount is gone (and /private/tmp is emptied) but the
+  # symlink survives, dangling. Replace it; refuse anything else in the way.
+  if [ -L "$link" ] && [ ! -e "$link" ]; then
+    note "Removing stale link $link"
+    run rm "$link"
+  elif [ -L "$link" ] || [ -e "$link" ]; then
+    die "$link already exists"
+  fi
 
   note "Attaching $image read-only at $mount_point"
   # /private/tmp is world-writable: refuse a mount root someone else created.
@@ -267,10 +274,21 @@ cmd_detach() {
   device="$(mount | grep -F " on $mount_point (" | awk '{print $1}')"
   whole="$(diskutil info "$device" | awk -F': *' '/APFS Physical Store/ {print $2}' | sed -E 's/s[0-9]+$//')"
   note "Ejecting $mount_point"
-  if run diskutil eject "$mount_point" && ! mount | grep -qF " on $mount_point ("; then
+  if [ "$dry_run" -eq 1 ]; then
+    run diskutil eject "$mount_point"
     return
   fi
-  [ "$dry_run" -eq 1 ] && return
+  # `simctl shutdown` returns before every simulator process has exited,
+  # notably when a debugger is attached. Retry for a while so that a process
+  # still on its way out is never mistaken for a persistent holder.
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    if diskutil eject "$mount_point" >/dev/null 2>&1; then
+      note "Ejected (attempt $attempt)"
+      return
+    fi
+    /bin/sleep 2
+  done
 
   # 4. After simulators have run from the volume, root-owned diagnostics
   #    (observed: spindump) keep its binaries mapped indefinitely, and only a

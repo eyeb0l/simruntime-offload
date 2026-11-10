@@ -279,3 +279,26 @@ device view connected and an app ran on the SSD-hosted device. One defect
 remains: the device is labelled "unavailable" while shut down (H26, untested:
 the sandboxed service's own runtime list is built from its container home and
 omits the symlinked runtime).
+
+---
+
+## Session 5 — 2026-11-10 — SDK-matching runtime offloaded; root variant blocked
+
+Approved: offload 24B8117; test the root-mounted trusted-directory variant.
+Full results:
+[results/2026-11-10/sdk-runtime-offload-and-root-variant.md](results/2026-11-10/sdk-runtime-offload-and-root-variant.md).
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H27 | Root can create a mount point under `/Library/Developer/CoreSimulator/Volumes`. | **Refuted.** `EPERM` as root. (V) |
+| H28 | After offloading, the SDK still selects the offloaded build and builds work. | **Confirmed** for `simctl` matching and `xcodebuild`. (V) |
+| H29 | Xcode accepts the offloaded build as the installed iOS 27.2 platform. | **Open.** Masked by the internal 24B114; needs the Components pane. |
+| H30 | A dangling runtime link is harmless. | **Partly.** No functional effect, but a warning on every `simctl` call. (V) |
+
+Decisions: approach B is set aside (root is not sufficient; the alternatives
+are disproportionate). `/Library/Developer/DeviceKit/Runtimes` is recorded as
+an untested candidate for a home-independent registration. The harness gained
+an eject retry and stale-link replacement.
+
+Mistake recorded: a device was shut down and its runtime force-unmounted while
+the project owner's Xcode debugger was attached to an app on it.
