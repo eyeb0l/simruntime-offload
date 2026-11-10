@@ -343,3 +343,50 @@ Full results: [results/2026-11-10/restart-with-ssd.md](results/2026-11-10/restar
 Open: live recovery of Xcode's interface when runtimes arrive late; the cause
 of the login delay; which change cleared the label; Xcode's "Get" badge on the
 generic simulator destination.
+
+---
+
+## Session 8 — 2026-11-10 — restart without the SSD, then reconnecting
+
+Full results: [results/2026-11-10/restart-without-ssd.md](results/2026-11-10/restart-without-ssd.md).
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H40 | With the SSD absent at login the system fails predictably. | **Confirmed.** Simulators unavailable, no errors. (V) |
+| H41 | A late-arriving SSD is picked up without polling. | **Confirmed.** 2 s from mount to both runtimes registered. (V) |
+| H42 | Xcode's interface recovers without a relaunch when runtimes arrive. | **Confirmed** by the project owner. (V) |
+
+Open: whether the login-time delay seen in session 7 is gone; abrupt
+disconnection; which change cleared the "unavailable" label; behaviour over
+days (temporary-file cleanup) and across an Xcode update.
+
+---
+
+## Session 9 — 2026-11-10 — login delay re-test; which change cleared the label
+
+**Login delay (third restart, SSD connected).** Agent started 14 s after login
+(80 s before the priority change); attaches took 3 s and 1 s; both runtimes
+registered about 21 s after login (2.5 minutes before). The project owner
+reports the simulators appearing shortly after Xcode and Device Hub opened.
+H39's replacement — background-priority throttling — is supported by two
+consistent runs. (V)
+
+**Root or not.** Links moved back to the per-user directory, with
+`CoreDeviceService` restarted first so that it started with no runtimes, as at
+login.
+
+| Registration | `CoreDeviceService` | Device Hub label | Run from Xcode |
+|---|---|---|---|
+| per-user directory | stale (running since boot) | unavailable | works |
+| `DeviceKit/Runtimes` | stale (started before the directory existed) | unavailable | works |
+| `DeviceKit/Runtimes` | fresh (restart) | **available** | works |
+| per-user directory | fresh (restarted) | **unavailable** | works |
+
+H26 is **confirmed**: the home-independent location is what clears the label.
+A fresh service is also needed the first time, because a service that started
+before `DeviceKit/Runtimes` existed is not watching it. The per-user route is
+functional but leaves Device Hub showing the simulators as unavailable.
+
+Decision: the links stay in `/Library/Developer/DeviceKit/Runtimes` and the
+agent is configured for it. A public tool therefore has one privileged setup
+step (creating that directory); everything afterwards is unprivileged.
