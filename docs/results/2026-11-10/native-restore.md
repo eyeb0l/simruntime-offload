@@ -55,18 +55,14 @@ but was not isolated. (V for the outcome, H for the reason)
 
 ## `uninstall`
 
-Run on the real machine as a dry run only, in both forms. It listed the three
-restores it would perform, or the three runtimes it would stop serving, and
-changed nothing (checked: manifest, mounts, links, agent all as before).
-
-A real run was not made. It would restore the project owner's two runtimes to
-the internal disk and remove her agent, which is hers to decide. Its logic is
-covered by unit tests that run against real files in a scratch home directory
-with only CoreSimulator, the attach commands and launchd faked.
+First run on the real machine as a dry run only, in both forms: it listed the
+restores it would perform, or the runtimes it would stop serving, and changed
+nothing. Then, with the project owner's approval, run for real on the two
+runtimes she uses. See `native-uninstall.md`.
 
 ## Not tested
 
-- A real `uninstall`, in either form.
+- `uninstall --leave-runtimes-on-volume` for real.
 - An interrupted restore on the real machine (the resume path is unit-tested).
 - `restore` with the image damaged, with the volume absent, or with too little
   internal space (each unit-tested; none provoked for real).

@@ -247,7 +247,8 @@ message says what to try instead.
    stops the uninstall with nothing changed.
 2. Restore each. Images on the volume are never deleted by `uninstall`.
 3. Remove the agent, then the tool's own files by name: the manifest, the lock
-   file, the installed program, the log. Remove its directories and the
+   file, the installed program, the log, and whatever the experiment harness
+   left in the state directory. Remove its directories and the
    per-build mount points with rmdir(2), which succeeds only when they are
    empty. Anything found that the tool did not put there is left and named.
 4. Print the one command that removes the `DeviceKit/Runtimes` directory.
@@ -364,8 +365,8 @@ In priority order. The first three affect the design.
 Progress: steps 1–6 are built and tested. Every command in §2 exists. On the development machine the native agent has
 replaced the harness's, and a third runtime was offloaded with the native tool
 alone and all three were then released with the native `eject`. `restore` and
-`uninstall` are built; `restore` has been run for real, `uninstall` only as a
-dry run, because a real one would move the project owner's own runtimes.
+`uninstall` have both been run for real, the latter followed by `setup` and two
+offloads that returned the machine to where it was.
 
 Differences from this plan so far:
 - `setup` does not run `sudo` itself. It prints the two commands that create

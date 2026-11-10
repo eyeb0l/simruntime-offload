@@ -8,10 +8,10 @@ development.
 
 **Status: the mechanism is proven on one machine; the native tool is feature
 complete but has had no system test pass and no release.** Every command
-exists, and its login agent keeps two runtimes served from an external SSD on
-macOS 27.2 / Xcode 27.2. `uninstall` has only been run as a dry run on a real
-machine. Do not run any of it on a machine you care about without reading the
-assessment first.
+exists and has been run for real on one machine, where its login agent keeps
+two runtimes served from an external SSD on macOS 27.2 / Xcode 27.2. Do not
+run any of it on a machine you care about without reading the assessment
+first.
 
 ```
 swift build

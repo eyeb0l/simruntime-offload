@@ -130,6 +130,15 @@ final class UninstallTests: OffloadedMachineTestCase {
         XCTAssertFalse(files.fileExists(atPath: paths.manifest))
     }
 
+    func testRemovesTheHarnessLeftoversSoALaterSetupCannotAdoptThem() throws {
+        try "24A434\t\(uuid)\tSimRuntimes/24A434/img.dmg\n"
+            .write(toFile: paths.harnessManifest, atomically: true, encoding: .utf8)
+        files.createFile(atPath: "\(paths.stateDirectory)/sro.sh", contents: Data("#!/bin/bash".utf8))
+        _ = try uninstall()
+        assertNothingOfOursRemains()
+        XCTAssertNil(ManifestStore(paths: paths).harnessRuntimes())
+    }
+
     func testWithNothingOffloadedItJustRemovesItself() throws {
         _ = try uninstall(leave: true)
         // A second run finds nothing and fails at nothing.

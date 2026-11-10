@@ -580,3 +580,32 @@ State left on the machine: as at the start of step 5. Two runtimes served from
 the volume (27.0, 27.2), none on the internal disk. The iOS 27.1 runtime, its
 image on the volume, and the devices created for it are gone. The loaded agent
 is the build installed during step 5; its `sync` path is unchanged since.
+
+---
+
+## Session 15 — 2026-11-10 — a real uninstall, and back
+
+With the project owner's approval, `uninstall` was run for real on her two
+runtimes, followed by `setup` and two offloads.
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H59 | `uninstall` restores every runtime and removes everything the tool installed, and nothing else. | **Confirmed**: 85 s; both runtimes internal and ready; agent, state, log and mount root gone; images intact; the one sudo-created directory left with the command to remove it. (V, one run) |
+| H60 | The machine can be returned to the offloaded arrangement from the images left on the volume, without copying. | **Confirmed**: `setup`, then 25 s and 22 s for the two offloads, each reusing its image. (V) |
+| H61 | The agent installed by the second `setup` can attach without further action. | **Confirmed** by detaching one runtime and starting the agent: attached and linked in 3 s. (V) |
+
+Full write-up: `docs/results/2026-11-10/native-uninstall.md`.
+
+Defect found before the run: `uninstall` left the harness's `runtimes.tsv`,
+which the next `setup` would have adopted as if its builds were still
+offloaded. Fixed by removing the harness's files by name. Tests now: 160.
+
+Recommendation recorded for step 7: remove the harness adoption code
+(`Adoption`, `harnessRuntimes`, `Paths.harnessFiles`) before a release. It
+exists for one machine, it has now caused two near-misses (this one, and
+`setup` forgetting a natively offloaded runtime in session 13), and after this
+session no machine has harness state left to adopt.
+
+State left on the machine: iOS 27.0 and 27.2 served from the volume, none on
+the internal disk, the step 6 agent loaded, no harness files anywhere outside
+the repository.

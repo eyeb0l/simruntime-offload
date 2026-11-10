@@ -38,6 +38,14 @@ public struct Paths: Sendable {
     /// State left by the shell harness in `experiments/`, which `setup` adopts.
     public var harnessManifest: String { "\(stateDirectory)/runtimes.tsv" }
 
+    /// Everything the experiment harness kept in the state directory.
+    /// `uninstall` removes these too: left behind, the harness's list would
+    /// be adopted by the next `setup` as if its runtimes were still offloaded.
+    public var harnessFiles: [String] {
+        ["runtimes.tsv", "config", "sro.sh", "sro-agent", "sro-agent.source-sha256"]
+            .map { "\(stateDirectory)/\($0)" }
+    }
+
     // MARK: Mount points
 
     /// Images are mounted here because the App-Sandboxed CoreDeviceService,
