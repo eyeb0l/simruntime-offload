@@ -1,5 +1,10 @@
 # Experiment plan
 
+> **Historical.** This is the plan as written before the experiments. What
+> actually happened, and what replaced the `hdiutil` commands and mount paths
+> below, is in [technical-assessment.md](technical-assessment.md) and
+> [results/](results/).
+
 Status: batches 0–2 were run on 2026-11-10; results are in
 [results/2026-11-10/batches-0-2.md](results/2026-11-10/batches-0-2.md). Batch 2
 stopped at a stop condition (step 2.9: the image could not be unmounted
