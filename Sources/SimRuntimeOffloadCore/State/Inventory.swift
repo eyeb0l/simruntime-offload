@@ -33,7 +33,6 @@ public struct OffloadedRuntimeStatus: Equatable, Sendable {
 public struct Inventory: Equatable, Sendable {
     public let internalImages: [RuntimeImage]
     public let offloaded: [OffloadedRuntimeStatus]
-    public let manifestSource: ManifestStore.Source
 }
 
 /// Works out the state of every offloaded runtime. Reads only.
@@ -54,14 +53,12 @@ public struct InventoryBuilder {
 
     public func build(
         manifest: Manifest,
-        source: ManifestStore.Source,
         images: [RuntimeImage],
         runtimes: [Runtime]
     ) -> Inventory {
         Inventory(
             internalImages: images,
-            offloaded: manifest.runtimes.map { status(of: $0, runtimes: runtimes) },
-            manifestSource: source
+            offloaded: manifest.runtimes.map { status(of: $0, runtimes: runtimes) }
         )
     }
 

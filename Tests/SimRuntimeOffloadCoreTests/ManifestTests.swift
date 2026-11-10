@@ -53,34 +53,4 @@ final class ManifestTests: XCTestCase {
             XCTAssertEqual(error as? ManifestError, .newerVersion(found: 99))
         }
     }
-
-    func testParsesTheHarnessFormatAndSkipsMalformedLines() {
-        let text = """
-            24B8117\t11111111-2222-3333-4444-555555555555\tSimRuntimes/24B8117/a.dmg
-            24A434\t11111111-2222-3333-4444-555555555555\tSimRuntimes/24A434/b.dmg
-            broken line
-            X\t\tmissing-uuid.dmg
-
-            """
-        let runtimes = ManifestStore.parseHarness(text)
-        XCTAssertEqual(runtimes.map(\.build), ["24B8117", "24A434"])
-        XCTAssertEqual(runtimes[1].imagePath, "SimRuntimes/24A434/b.dmg")
-        XCTAssertNil(runtimes[0].sha256)
-    }
-
-    func testFallsBackToTheHarnessOnlyWhenThereIsNoManifest() throws {
-        let store = ManifestStore(paths: paths)
-        XCTAssertEqual(try store.loadIncludingHarness().source, .none)
-
-        try FileManager.default.createDirectory(atPath: paths.stateDirectory, withIntermediateDirectories: true)
-        try "24A434\tU\tp.dmg\n".write(toFile: paths.harnessManifest, atomically: true, encoding: .utf8)
-        let fromHarness = try store.loadIncludingHarness()
-        XCTAssertEqual(fromHarness.source, .harness)
-        XCTAssertEqual(fromHarness.manifest.runtimes.map(\.build), ["24A434"])
-
-        try store.save(Manifest(runtimes: [sample]))
-        let fromManifest = try store.loadIncludingHarness()
-        XCTAssertEqual(fromManifest.source, .manifest)
-        XCTAssertEqual(fromManifest.manifest.runtimes.map(\.build), ["24B8117"])
-    }
 }

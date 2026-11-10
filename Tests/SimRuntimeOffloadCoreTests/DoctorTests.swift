@@ -114,13 +114,31 @@ final class DoctorTests: XCTestCase {
         XCTAssertEqual(check("agent", on: machine).status, .warning)
     }
 
-    func testStateReportsTheHarnessWhenThereIsNoManifest() {
+    func testStateReflectsWhetherAManifestExists() {
         var machine = FakeMachine()
-        machine.files[paths.harnessManifest] = .file
-        let harness = check("state", on: machine)
-        XCTAssertEqual(harness.status, .note)
-        XCTAssertTrue(harness.summary.contains("harness"))
+        XCTAssertEqual(check("state", on: machine).status, .note)
         machine.files[paths.manifest] = .file
         XCTAssertEqual(check("state", on: machine).status, .ok)
+    }
+
+    func testAnUnvalidatedVersionFailsUnlessExplicitlyAllowedAndIsNeverReportedAsOk() {
+        var machine = FakeMachine()
+        machine.xcode = Version("28.0")
+        let refused = Doctor(paths: paths, probe: machine).run()
+        XCTAssertFalse(Doctor.passed(refused))
+        XCTAssertEqual(refused.first { $0.id == "versions" }?.status, .failure)
+
+        let allowed = Doctor(paths: paths, probe: machine, allowUnvalidatedVersion: true).run()
+        XCTAssertTrue(Doctor.passed(allowed))
+        let versions = allowed.first { $0.id == "versions" }
+        XCTAssertEqual(versions?.status, .warning)
+        XCTAssertTrue(versions?.summary.contains("--allow-unvalidated-version") ?? false)
+    }
+
+    func testTheOverrideDoesNotExcuseAnyOtherFailure() {
+        var machine = FakeMachine()
+        machine.xcode = Version("28.0")
+        machine.integrityProtection = false
+        XCTAssertFalse(Doctor.passed(Doctor(paths: paths, probe: machine, allowUnvalidatedVersion: true).run()))
     }
 }

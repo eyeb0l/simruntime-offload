@@ -30,10 +30,12 @@ public struct Check: Equatable, Codable, Sendable {
 public struct Doctor {
     private let paths: Paths
     private let probe: SystemProbing
+    private let allowUnvalidatedVersion: Bool
 
-    public init(paths: Paths, probe: SystemProbing) {
+    public init(paths: Paths, probe: SystemProbing, allowUnvalidatedVersion: Bool = false) {
         self.paths = paths
         self.probe = probe
+        self.allowUnvalidatedVersion = allowUnvalidatedVersion
     }
 
     public func run() -> [Check] {
@@ -68,12 +70,21 @@ public struct Doctor {
                 status: .ok,
                 summary: "Validated combination: \(configuration.name), CoreSimulator \(found.coreSimulator?.description ?? "?")."
             )
+        case .unvalidated(let problems) where allowUnvalidatedVersion:
+            // The user's explicit choice. Still reported, never as "ok".
+            return Check(
+                id: "versions",
+                status: .warning,
+                summary: "Not validated on this system: " + problems.joined(separator: "; ")
+                    + ". Proceeding because --allow-unvalidated-version was given.",
+                remedy: "Use --dry-run first, and keep a way to re-download any runtime you offload."
+            )
         case .unvalidated(let problems):
             return Check(
                 id: "versions",
                 status: .failure,
                 summary: "Not validated on this system: " + problems.joined(separator: "; ") + ".",
-                remedy: "How Simulator runtimes are stored changes between Xcode releases. Update simruntime-offload, or wait for a release that lists this combination."
+                remedy: "How Simulator runtimes are stored changes between Xcode releases. Update simruntime-offload, or wait for a release that lists this combination. Runtimes already offloaded keep being served, and `restore`, `eject` and `uninstall` still work. To offload anyway, at your own risk, add --allow-unvalidated-version."
             )
         }
     }
@@ -224,21 +235,9 @@ public struct Doctor {
                     remedy: "It may be damaged or written by a newer version. Nothing will be changed until this is resolved."
                 )
             }
-            // The manifest is authoritative once it exists. The harness's
-            // list is adopted only when there is no manifest; after that it
-            // goes stale as soon as this tool offloads or restores anything,
-            // and following it would forget runtimes.
             return Check(
                 id: "state", status: .ok,
                 summary: "Manifest lists \(manifest.runtimes.count) offloaded runtime(s).")
-        }
-        if probe.fileKind(at: paths.harnessManifest) == .file {
-            return Check(
-                id: "state",
-                status: .note,
-                summary: "No manifest yet, but the experiment harness has state at \(paths.harnessManifest).",
-                remedy: "`simruntime-offload setup` will adopt it."
-            )
         }
         return Check(id: "state", status: .note, summary: "Nothing is offloaded yet.")
     }

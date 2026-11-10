@@ -25,7 +25,7 @@ public enum SyncError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .alreadyRunning:
-            return "another sync is already running"
+            return "another simruntime-offload operation is still running, most likely the login agent. If it does not finish, it may be waiting for you to answer a macOS prompt about access to files on a removable volume; nothing was changed"
         case .mountRootNotOurs(let path):
             return "\(path) exists but is not a directory owned by you; refusing to mount into it"
         }

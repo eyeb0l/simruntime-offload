@@ -1,8 +1,9 @@
 # Design: `simruntime-offload`
 
-Status: **proposal for review.** Nothing in this document is built. The shell
-harness in `experiments/` proved the mechanism; this is the design for the
-tool that replaces it.
+Status: **built.** This began as a proposal and is kept as the design record:
+the body is the design as proposed, amended where the build departed from it,
+and §11 lists every departure. The shell harness in `experiments/` proved the
+mechanism; this is the design of the tool that replaced it.
 
 Background and evidence: [technical-assessment.md](technical-assessment.md).
 Every design choice below that rests on an experiment cites the hazard number
@@ -76,7 +77,6 @@ Sources/SimRuntimeOffloadCore/        everything testable; no user-facing text
               Inventory               the state of each offloaded runtime
               Sync                    the reconcile step shared by the agent and the CLI
               StateLock               the lock that keeps sync and eject from overlapping
-              Adoption                first-time import of the experiment harness's state
               Offload                 the `offload` flow
               Eject                   the `eject` flow, and the release step it shares
               Restore                 the `restore` flow
@@ -247,8 +247,7 @@ message says what to try instead.
    stops the uninstall with nothing changed.
 2. Restore each. Images on the volume are never deleted by `uninstall`.
 3. Remove the agent, then the tool's own files by name: the manifest, the lock
-   file, the installed program, the log, and whatever the experiment harness
-   left in the state directory. Remove its directories and the
+   file, the installed program, the log. Remove its directories and the
    per-build mount points with rmdir(2), which succeeds only when they are
    empty. Anything found that the tool did not put there is left and named.
 4. Print the one command that removes the `DeviceKit/Runtimes` directory.
@@ -266,9 +265,9 @@ the way out is the one thing that must still be available.
 ## 6. Privilege, consent and safety
 
 **Privilege.** Exactly one action needs root: creating
-`/Library/Developer/DeviceKit/Runtimes`. `setup` prints the command, explains
-that it lets Device Hub see offloaded simulators as available, and runs it
-through `sudo` only on confirmation. The tool never caches credentials, never
+`/Library/Developer/DeviceKit/Runtimes`. `setup` prints the commands and
+explains that the directory lets Device Hub see offloaded simulators as
+available; the user runs them. The tool never asks for a password, never
 installs anything that runs as root, and works without this step.
 
 That directory is made user-owned so the unprivileged agent can add and remove
@@ -319,13 +318,16 @@ version and stops serving new changes, leaving existing mounts alone, until the
 tool is updated or the user overrides. Failing safe matters more here than
 convenience: the storage design has changed four times in five years.
 
+As built, only `setup` and `offload` stop; the agent keeps serving what is
+already offloaded. §11 gives the reason.
+
 ## 8. Testing
 
 | Level | What | How |
 |---|---|---|
 | Unit | Manifest read/write and migration; parsing of `simctl` and `diskutil` output; the `Sync` decision table; preflight version logic | XCTest with recorded fixtures and fake process runners. No machine state. |
 | Integration | Attach, link, eject and stale-link handling against a small synthetic disk image, in a temporary link directory | XCTest; needs no runtime and no external disk; safe in CI. |
-| System | The matrix in the assessment §4, plus the untested items in its §7 | Scripted where possible (`simctl`, `xcodebuild`); a written checklist for what needs a person (Xcode's interface, restarts, unplugging). |
+| System | The matrix in the assessment §4, plus the untested items in its §7 | `scripts/system-test.sh` takes one disposable runtime through offload, boot, restore, re-offload and restore, checking the machine after each step. `docs/system-test-checklist.md` lists what needs a person (Xcode's interface, restarts, unplugging). |
 
 The harness's benchmarks (`experiments/bench/`) are kept so the attach-stack
 result can be re-measured on new OS versions.
@@ -362,11 +364,10 @@ In priority order. The first three affect the design.
 
 ## 11. Build plan
 
-Progress: steps 1–6 are built and tested. Every command in §2 exists. On the development machine the native agent has
-replaced the harness's, and a third runtime was offloaded with the native tool
-alone and all three were then released with the native `eject`. `restore` and
-`uninstall` have both been run for real, the latter followed by `setup` and two
-offloads that returned the machine to where it was.
+Progress: all seven steps are done and 0.1.0 is tagged. Every command in §2
+exists and has been run for real on the development machine, the scripted
+system test passes, and the native agent has been through a restart
+(`results/2026-11-10/system-test-0.1.0.md`).
 
 Differences from this plan so far:
 - `setup` does not run `sudo` itself. It prints the two commands that create
@@ -374,17 +375,26 @@ Differences from this plan so far:
   ever asks for a password.
 - `setup` does not choose a volume. `offload --volume <UUID>` does, and later
   offloads default to the volume already in use when there is exactly one.
-- The harness can no longer manage everything. Its list is adopted once, when
-  there is no manifest; after that the manifest is authoritative, and a runtime
-  offloaded natively is unknown to the harness. The earlier rule (follow the
-  harness whenever the two differ) would have made `setup` forget such a
-  runtime, and `doctor` recommended exactly that until this step's test showed it.
+- The harness can no longer manage the machine, and the tool no longer reads
+  its state at all (see below).
 - `offload` refuses while any simulator is booted, rather than skipping the
   service restart.
 - `restore` keeps a staged manifest entry until the import is confirmed, and
   checks the image's checksum first (§5.3).
-- `--allow-unvalidated-version` does not exist yet. `offload` and `setup`
-  refuse on an unvalidated version; the commands that undo things do not check.
+- `--allow-unvalidated-version` is honoured by `doctor`, `setup` and
+  `offload`, which are the commands that check versions. It turns the failure
+  into a warning that is printed every time; it excuses no other check.
+- The agent's `sync` is not gated on the version check either, contrary to §7,
+  which said it would stop serving after an update. Stopping would take away
+  every simulator on the day of a minor update; continuing risks only that
+  CoreSimulator ignores the links, which is visible and harmless. What is
+  refused on an unvalidated version is deleting things: `offload`.
+- The adoption of the experiment harness's state has been removed. It existed
+  for one machine, caused two near-misses, and has nothing left to adopt.
+- `doctor` does not detect a refused attach, as §6 said it would. The agent's
+  log does, and the README says where to look.
+- `setup --shared-link-directory=no` does not exist. Without the shared
+  directory the per-user one is used automatically.
 
 1. Package skeleton, `Support`, `Preflight`, `doctor`. Unit tests.
 2. `Simulators`, `Volume`, `Manifest`, `list`. Unit tests with fixtures.

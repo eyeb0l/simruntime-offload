@@ -97,9 +97,8 @@ final class InventoryTests: XCTestCase {
     func testBuildsTheWholeInventory() throws {
         let images = try Simulators.parseImages(fixture("simctl-runtime-list.json"))
         let inventory = InventoryBuilder(paths: paths, fileSystem: healthy, volumeLookup: { _ in self.volume })
-            .build(manifest: Manifest(runtimes: [entry]), source: .harness, images: images, runtimes: [registered])
+            .build(manifest: Manifest(runtimes: [entry]), images: images, runtimes: [registered])
         XCTAssertEqual(inventory.internalImages.count, 2)
         XCTAssertEqual(inventory.offloaded.map(\.state), [.active])
-        XCTAssertEqual(inventory.manifestSource, .harness)
     }
 }

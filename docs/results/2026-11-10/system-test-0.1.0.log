@@ -1,0 +1,138 @@
+
+== Preconditions
+   ok    doctor passes
+   ok    build 24A94425 is installed on the internal disk
+   ok    the volume is mounted at /Volumes/External
+   ok    nothing of this build is on the volume
+
+== Step 1: offload --dry-run
+Runtime:  build 24A94425, version 27.1, 7.87 GB, Patchable Cryptex Disk Image
+Volume:   "External" (<volume UUID>)
+Copy to:  /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg
+
+Dry run: would copy and verify the image, remove the internal copy, restart the
+CoreSimulator service and attach the copy. Nothing was changed.
+   ok    the dry run changed nothing
+   ok    the dry run copied nothing
+   (1 s)
+
+== Step 2: offload
+Runtime:  build 24A94425, version 27.1, 7.87 GB, Patchable Cryptex Disk Image
+Volume:   "External" (<volume UUID>)
+Copy to:  /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg
+
+Copying /System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/1d40f14271d1b0588751a983be44d71887c32527.asset/AssetData/Restore/043-77717-424.dmg
+     to /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg
+Verified. SHA-256 fd311be2d5d376f5174318b72808e319f012d1b75251a3d973b55598776c2a8d
+Removing the internal copy.
+The internal copy is gone.
+Restarting the CoreSimulator service so it forgets the old location.
+Attaching the copy on the volume.
+Done. iOS 27.1 is now served from the external volume.
+   ok    copied the image
+   ok    internal copy is gone
+   ok    the daemon's inboxes are empty
+   ok    image is on the volume
+   ok    image matches its recorded checksum
+   ok    image is attached at /private/tmp/simruntime-offload-501/24A94425
+   ok    runtime is linked
+   ok    CoreSimulator lists the runtime from the volume
+   (73 s)
+
+== Step 3: boot a simulator from the offloaded runtime
+   ok    a new device booted from /private/tmp/simruntime-offload-501/24A94425/Lib… and launched Settings
+   ok    1530 files open under the offload mount
+   (70 s)
+
+== Step 4: sync, when there is nothing to do
+[21:36:50] 24A434: already active
+[21:36:50] 24B8117: already active
+[21:36:50] 24A94425: already active
+   ok    sync changed no mounts
+   ok    runtime is still served from the volume
+   (2 s)
+
+== Step 5: offload again is refused
+offload: build 24A94425 is already served from an external volume
+   ok    a second offload was refused
+   ok    and changed nothing
+   (1 s)
+
+== Step 6: restore --dry-run
+Runtime:  build 24A94425, iOS 27.1, 7.87 GB
+Image:    /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg on "External"
+
+Dry run: would check the image, stop serving it from the volume, and import it to
+the internal disk.
+The image on the volume would be kept.
+Nothing was changed.
+   ok    the dry run changed nothing
+   ok    the dry run imported nothing
+   (1 s)
+
+== Step 7: restore, keeping the image
+Runtime:  build 24A94425, iOS 27.1, 7.87 GB
+Image:    /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg on "External"
+
+Checking the image on the volume against its recorded checksum.
+Unregistering the copy on the volume and ejecting its image.
+Importing /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg to the internal disk.
+CoreSimulator reports the import ready.
+The image stays at /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg.
+Done. iOS 27.1 is installed on the internal disk again.
+   ok    CoreSimulator reports the internal image ready
+   ok    the daemon's inboxes are empty
+   ok    image is no longer attached at /private/tmp/simruntime-offload-501/24A94425
+   ok    runtime is no longer linked
+   ok    CoreSimulator lists the runtime from the internal disk
+   ok    the image was kept on the volume
+   ok    and still matches its checksum
+   (55 s)
+
+== Step 8: offload again, reusing the image left on the volume
+Runtime:  build 24A94425, version 27.1, 7.87 GB, Disk Image
+Volume:   "External" (<volume UUID>)
+Copy to:  /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg
+
+A copy is already at /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg; comparing it with the original.
+Verified. SHA-256 fd311be2d5d376f5174318b72808e319f012d1b75251a3d973b55598776c2a8d
+Removing the internal copy.
+The internal copy is gone.
+Restarting the CoreSimulator service so it forgets the old location.
+Attaching the copy on the volume.
+Done. iOS 27.1 is now served from the external volume.
+   ok    reused the image already on the volume
+   ok    internal copy is gone
+   ok    the daemon's inboxes are empty
+   ok    image is on the volume
+   ok    image matches its recorded checksum
+   ok    image is attached at /private/tmp/simruntime-offload-501/24A94425
+   ok    runtime is linked
+   ok    CoreSimulator lists the runtime from the volume
+   ok    exactly one image in the build's directory
+   (41 s)
+
+== Step 9: restore --delete-image
+Runtime:  build 24A94425, iOS 27.1, 7.87 GB
+Image:    /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg on "External"
+
+Checking the image on the volume against its recorded checksum.
+Unregistering the copy on the volume and ejecting its image.
+Importing /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg to the internal disk.
+CoreSimulator reports the import ready.
+Deleted /Volumes/External/SimRuntimes/24A94425/043-77717-424.dmg.
+Done. iOS 27.1 is installed on the internal disk again.
+   ok    CoreSimulator reports the internal image ready
+   ok    the daemon's inboxes are empty
+   ok    image is no longer attached at /private/tmp/simruntime-offload-501/24A94425
+   ok    runtime is no longer linked
+   ok    CoreSimulator lists the runtime from the internal disk
+   ok    the image was deleted from the volume
+   (36 s)
+
+== Afterwards
+   ok    every other runtime is as it was
+   ok    doctor still passes
+   ok    no simulator was left booted
+
+9 steps in 284 s. PASSED.

@@ -68,13 +68,6 @@ public enum ManifestError: Error, Equatable, CustomStringConvertible {
 }
 
 public struct ManifestStore {
-    public enum Source: Equatable, Sendable {
-        case manifest
-        /// Read from the state the shell harness left; not yet adopted.
-        case harness
-        case none
-    }
-
     private let paths: Paths
 
     public init(paths: Paths) {
@@ -105,35 +98,5 @@ public struct ManifestStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(manifest).write(to: URL(fileURLWithPath: paths.manifest), options: .atomic)
-    }
-
-    /// The manifest if there is one; otherwise whatever the experiment harness
-    /// recorded, so that its runtimes are visible before `setup` adopts them.
-    public func loadIncludingHarness() throws -> (manifest: Manifest, source: Source) {
-        if FileManager.default.fileExists(atPath: paths.manifest) {
-            return (try load(), .manifest)
-        }
-        if let harness = harnessRuntimes() {
-            return (Manifest(runtimes: harness), .harness)
-        }
-        return (Manifest(), .none)
-    }
-
-    /// What the experiment harness recorded, or `nil` if it left no state.
-    public func harnessRuntimes() -> [OffloadedRuntime]? {
-        guard let text = try? String(contentsOfFile: paths.harnessManifest, encoding: .utf8) else {
-            return nil
-        }
-        return ManifestStore.parseHarness(text)
-    }
-
-    /// The harness kept one line per runtime: build, volume UUID and image
-    /// path, separated by tabs.
-    static func parseHarness(_ text: String) -> [OffloadedRuntime] {
-        text.split(separator: "\n").compactMap { line in
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            guard fields.count == 3, !fields.contains(where: \.isEmpty) else { return nil }
-            return OffloadedRuntime(build: fields[0], volumeUUID: fields[1], imagePath: fields[2])
-        }
     }
 }

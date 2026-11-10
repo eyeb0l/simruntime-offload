@@ -50,7 +50,6 @@ final class ImageStoreTests: ScratchTestCase {
 
         let sums = try String(contentsOfFile: "\(root!)/volume/SimRuntimes/TEST/SHA256SUMS", encoding: .utf8)
         XCTAssertEqual(sums, "\(checksum)  source.dmg\n")
-        XCTAssertEqual(Adoption.checksum(for: "source.dmg", in: sums), checksum)
 
         let attributes = try SystemProcessRunner().run("/usr/bin/xattr", [destination])
         XCTAssertFalse(attributes.outputText.contains("quarantine"))

@@ -1,8 +1,10 @@
 # Technical assessment
 
 Status: consolidated after nine sessions of investigation and experiment on
-2026-11-10. This replaces the initial assessment written before any experiment
-was run; that version is in the repository history (commit `ac93e63`).
+2026-11-10, and updated after the native tool was built and system-tested the
+same day (§4, §7). This replaces the initial assessment written before any
+experiment was run; that version is in the repository history (commit
+`ac93e63`).
 
 Scope of validity: **macOS 27.2.1 (26B131), Xcode 27.2 (27B52), CoreSimulator
 1174.21, Apple silicon, one machine.** The storage design for Simulator
@@ -108,6 +110,24 @@ Each element is the way it is for a reason found by experiment:
 | Reconnection after that | Runtime registered again in 1 s; device boots; images and filesystem verify clean. |
 | Restore to the internal disk by `simctl runtime add` | 35–40 s, one image of space; Xcode shows the platform as installed again. |
 
+The rows above were established with the shell harness. With the native tool,
+`simruntime-offload` 0.1.0:
+
+| Behaviour | Result |
+|---|---|
+| `offload` of a freshly downloaded runtime | 54 s for 7.9 GB: copy, two checksums, image verification, delete, attach. Internal store empty afterwards. |
+| `offload` of a runtime whose image is still on the volume | 22 s; the image is compared and reused, not copied. |
+| `restore` | 40 s; the others untouched. |
+| `eject` | 13 s for two runtimes, 23 s for three; first attempt each time, straight after a simulator shutdown. |
+| Remount or replug after `eject` | Every runtime back within seconds, with no other action. |
+| `uninstall`, then `setup` and offloading again | 85 s out, about 50 s back, for two runtimes; nothing of the tool left in between. |
+| First boot of a new device, same runtime | 38 s from the volume; 35 s from the internal disk. |
+| The scripted system test | 9 steps, all checks passed. |
+| Restart with the disk connected | Both runtimes attached by the native agent 1.5 min after boot, with the machine still heavily loaded. |
+
+See `results/2026-11-10/native-offload.md`, `native-restore.md`,
+`native-uninstall.md` and `system-test-0.1.0.md`.
+
 ## 5. Hazards a tool must handle
 
 Each of these was hit in practice.
@@ -157,10 +177,22 @@ Each of these was hit in practice.
 - **Device data is not relocated.** Each simulator's own data
   (about 3 GB each here) stays in the user's Library.
 
+- **A new or upgraded agent waits for consent.** macOS asks again for access
+  to removable volumes when the agent's program changes, and until the prompt
+  is answered nothing is attached. Seen as a 50 s stall after reinstalling.
+
+**Observed once and not explained**
+
+- For about two minutes, some minutes after two offloads and during a runtime
+  download, `xcodebuild` listed no simulator destinations although `simctl`
+  and `devicectl` listed the simulators as available. It cleared by itself.
+  Restarting the CoreSimulator service did not reproduce it.
+
 **Untested**
 
 | Item | Why it matters |
 |---|---|
+| A restart without the disk, and an abrupt disconnection, with the native tool's agent | Both were tested with the harness's agent (§4). The native agent has been through a restart with the disk connected, and through eject, remount and replug. |
 | Abrupt disconnection during a build, a debug session or an `offload` copy | Tested once, with an idle app; survivable and self-healing in that case. |
 | Days and weeks of use | Temporary-file cleanup is understood from its script (S) but not observed over time. |
 | An Xcode or macOS update | `DeviceKit` belongs to Xcode's system resources; an update may remove the extra directory, and CoreSimulator's discovery rules may change. |

@@ -609,3 +609,50 @@ session no machine has harness state left to adopt.
 State left on the machine: iOS 27.0 and 27.2 served from the volume, none on
 the internal disk, the step 6 agent loaded, no harness files anywhere outside
 the repository.
+
+---
+
+## Session 16 — 2026-11-10 — build step 7: system test and release preparation
+
+Changes to the tool: the adoption of the harness's state removed, as
+recommended in session 15; `--allow-unvalidated-version` added; the version
+set to 0.1.0; the lock error now names the likely cause. Tests: 154 (the
+adoption tests went with the code).
+
+Added: `scripts/system-test.sh`, which takes one disposable runtime through
+its whole life and checks the machine after every step;
+`docs/system-test-checklist.md` for what needs a person; a README that opens
+with the limitations; a changelog.
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H62 | The whole lifecycle passes in one scripted run on the final build. | **Confirmed**: 9 steps, every check ok, 284 s; other runtimes unchanged. (V) |
+| H63 | An app builds with `xcodebuild` for, installs on and runs on a simulator whose runtime was offloaded natively. | **Confirmed**, after the window described under H65. (V) |
+| H64 | A newly installed agent attaches without further action. | **Qualified.** Its first attach stalled about 50 s and then succeeded; consistent with a consent prompt being answered, which was not observed from this side. In session 15 the same test returned in 3 s. (V for the stall, H for the cause) |
+| H65 | Restarting the CoreSimulator service makes `xcodebuild` lose its simulator destinations for a while. | **Refuted.** Destinations were listed in the second after a restart. The two-minute window in which they were missing is therefore unexplained. |
+
+Full write-up: `docs/results/2026-11-10/system-test-0.1.0.md`.
+
+Decisions:
+
+- The agent's `sync` stays ungated by the version check, against §7 of the
+  design. Recorded there with the reason.
+- 0.1.0 was not tagged until the native agent had been through a restart,
+  the one validation in the brief it had not had. The project owner restarted
+  with the disk connected: boot at 21:51, both runtimes attached and linked by
+  the agent at 21:52:29, no permission errors (H66, confirmed, V, one run).
+  Tagged after that.
+
+Open before publication, for the project owner:
+
+- `docs/baseline/` and three other files record this machine's volume UUID.
+  The baseline was always meant to go before a public release, and removing
+  it from the tree does not remove it from the history.
+- The copyright line in `LICENSE` was taken from the git configuration.
+- A privacy pass over the tracked files found no user name, host name, serial
+  number or application name. A test fixture carried two real simulator
+  identifiers; they have been replaced.
+
+State left on the machine: iOS 27.0 and 27.2 served from the volume, none on
+the internal disk, the 0.1.0 agent loaded, nothing booted. The disposable
+runtime and its devices are gone.

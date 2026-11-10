@@ -1,7 +1,7 @@
 import Foundation
 import SimRuntimeOffloadCore
 
-let toolVersion = "0.1.0-dev"
+let toolVersion = "0.1.0"
 
 let usage = """
     simruntime-offload — serve Xcode Simulator runtimes from an external volume
@@ -9,7 +9,7 @@ let usage = """
     Usage:
       simruntime-offload doctor [--json]    check whether the tool can work on this Mac; changes nothing
       simruntime-offload list               runtimes on the internal disk and on external volumes; changes nothing
-      simruntime-offload setup [--dry-run]  adopt existing state and install the login agent
+      simruntime-offload setup [--dry-run]  check the link directory and install the login agent
       simruntime-offload offload <runtime> [--volume <UUID>] [--dry-run]
                                             copy a runtime to the volume, verify it, remove the internal
                                             copy and serve it from the volume
@@ -27,8 +27,18 @@ let usage = """
     <runtime> is a build number, as shown by `list`.
 
     Every command that changes anything takes --dry-run, which prints what it
-    would do and changes nothing. This is a development build.
+    would do and changes nothing.
+
+    setup and offload refuse on a macOS, Xcode or CoreSimulator version this
+    release was not validated on. --allow-unvalidated-version overrides that,
+    at your own risk. The other commands never refuse on version.
     """
+
+/// One of the two escape hatches. Accepted anywhere on the command line, and
+/// honoured only by the commands that check versions: `doctor`, `setup` and
+/// `offload`. The login agent never passes it.
+let allowUnvalidatedVersion = CommandLine.arguments.contains("--allow-unvalidated-version")
+let arguments = Array(CommandLine.arguments.dropFirst()).filter { $0 != "--allow-unvalidated-version" }
 
 func printError(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -46,7 +56,7 @@ func runDoctor(arguments: [String]) -> Int32 {
     }
 
     let paths = Paths(home: NSHomeDirectory(), userID: getuid())
-    let checks = Doctor(paths: paths, probe: SystemProbe()).run()
+    let checks = Doctor(paths: paths, probe: SystemProbe(), allowUnvalidatedVersion: allowUnvalidatedVersion).run()
 
     if asJSON {
         let encoder = JSONEncoder()
@@ -106,9 +116,8 @@ func runList(arguments: [String]) -> Int32 {
     let volumes = Volumes()
     let inventory: Inventory
     do {
-        let (manifest, source) = try ManifestStore(paths: paths).loadIncludingHarness()
         inventory = InventoryBuilder(paths: paths, volumeLookup: volumes.volume(uuid:)).build(
-            manifest: manifest, source: source,
+            manifest: try ManifestStore(paths: paths).load(),
             images: try simulators.images(), runtimes: try simulators.runtimes())
     } catch {
         printError("list: \(error)")
@@ -131,10 +140,6 @@ func runList(arguments: [String]) -> Int32 {
     for item in inventory.offloaded {
         let volume = item.volume.map { "\"\($0.name)\"" } ?? "volume \(item.runtime.volumeUUID)"
         print("  \(item.runtime.build)  \(item.displayName)  \(describe(item.state))  on \(volume)")
-    }
-    if inventory.manifestSource == .harness {
-        print("")
-        print("These are recorded by the experiment harness; `setup` will adopt them.")
     }
     return 0
 }
@@ -227,24 +232,9 @@ func runSetup(arguments: [String]) -> Int32 {
             """)
     }
 
-    // 3. Adopt what the experiment harness recorded, but only when there is
-    //    no manifest yet. Once one exists it is authoritative: the harness's
-    //    list knows nothing of what this tool has offloaded since, and
-    //    following it again would forget those runtimes.
-    let store = ManifestStore(paths: paths)
+    // 3. The manifest. Nothing to create: it is written by the first offload.
     do {
-        let existing = try store.load()
-        let hasManifest = FileManager.default.fileExists(atPath: paths.manifest)
-        if !hasManifest, let harness = store.harnessRuntimes() {
-            let volumes = Volumes()
-            let adopted = Adoption(paths: paths, volumeLookup: volumes.volume(uuid:)).manifest(
-                adopting: harness, existing: existing, runtimes: (try? Simulators().runtimes()) ?? [])
-            let builds = adopted.runtimes.map { $0.build }.joined(separator: ", ")
-            print("Manifest: \(action.lowercased()) record \(builds) from the experiment harness.")
-            if !dryRun { try store.save(adopted) }
-        } else {
-            print("Manifest: \(existing.runtimes.count) runtime(s).")
-        }
+        print("Manifest: \(try ManifestStore(paths: paths).load().runtimes.count) runtime(s).")
     } catch {
         printError("setup: \(error)")
         return 1
@@ -289,8 +279,14 @@ func runSetup(arguments: [String]) -> Int32 {
 /// Runs the preflight checks and reports failures. Commands that change
 /// anything call this first.
 func preflightPassed(for command: String, paths: Paths) -> Bool {
-    let checks = Doctor(paths: paths, probe: SystemProbe()).run()
-    if Doctor.passed(checks) { return true }
+    let checks = Doctor(paths: paths, probe: SystemProbe(), allowUnvalidatedVersion: allowUnvalidatedVersion).run()
+    if Doctor.passed(checks) {
+        // An override is never silent.
+        for check in checks where check.id == "versions" && check.status == .warning {
+            printError("\(command): warning: \(check.summary)")
+        }
+        return true
+    }
     printError("\(command): this Mac does not pass the preflight checks:")
     for check in checks where check.status == .failure {
         printError("  \(check.summary)")
@@ -631,7 +627,6 @@ func runUninstall(arguments: [String]) -> Int32 {
     }
 }
 
-let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case "restore":
     exit(runRestore(arguments: Array(arguments.dropFirst())))

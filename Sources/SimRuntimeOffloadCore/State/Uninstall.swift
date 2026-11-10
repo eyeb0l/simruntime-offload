@@ -142,9 +142,6 @@ public struct Uninstaller {
         removeFile(paths.manifest, &summary)
         removeFile("\(paths.stateDirectory)/sync.flock", &summary)
         removeFile(paths.agentLog, &summary)
-        for path in paths.harnessFiles { removeFile(path, &summary) }
-        // The harness's lock was a directory.
-        removeEmptyDirectory("\(paths.stateDirectory)/sync.lock", &summary)
         removeEmptyDirectory((paths.installedExecutable as NSString).deletingLastPathComponent, &summary)
         removeEmptyDirectory(paths.logDirectory, &summary)
         removeEmptyDirectory(paths.stateDirectory, &summary)
