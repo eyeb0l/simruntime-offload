@@ -390,3 +390,23 @@ functional but leaves Device Hub showing the simulators as unavailable.
 Decision: the links stay in `/Library/Developer/DeviceKit/Runtimes` and the
 agent is configured for it. A public tool therefore has one privileged setup
 step (creating that directory); everything afterwards is unprivileged.
+
+---
+
+## Session 10 — 2026-11-10 — the two design validations
+
+Results: [restore-by-reimport.md](results/2026-11-10/restore-by-reimport.md),
+[abrupt-disconnection.md](results/2026-11-10/abrupt-disconnection.md).
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H43 | `simctl runtime add` restores an offloaded runtime from the SSD. | **Confirmed**, 35–40 s, registered as a plain disk image. (V) |
+| H44 | Xcode then regards the platform as installed. | **Confirmed** by the project owner. (V) |
+| H45 | Deleting an imported runtime frees its space. | **Refuted** until `scan-and-mount` clears an inbox clone. (V) |
+| H46 | Pulling the cable with a simulator running leaves dead mounts or hung services to repair. | **Refuted.** The kernel removes the mount; services keep running; `Sync` restores the runtime on reconnection. (V, one run) |
+
+Decisions: `restore` is re-import; `scan-and-mount` follows every add and
+delete; no special repair path for disconnection.
+
+24B8117 was internal for the duration of the disconnection test and is served
+from the SSD again.

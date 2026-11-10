@@ -133,7 +133,8 @@ before the next begins, and each of which can be undone until the one marked
 5. Rename into place; write `SHA256SUMS`; add the manifest entry as *staged*.
 6. **Point of no return.** `xcrun simctl runtime delete <id>`.
 7. Measure the internal runtime store. If the asset was not reclaimed, run
-   `simctl runtime scan-and-mount`, delete again, measure again (hazard 2). If it is
+   `simctl runtime scan-and-mount`, delete again, measure again (hazards 2
+   and 10). If it is
    still present, stop and report: the runtime remains usable from its internal
    copy and nothing else is changed.
 8. If no simulator is booted, restart the per-user CoreSimulator service (hazard 1).
@@ -145,13 +146,21 @@ before the next begins, and each of which can be undone until the one marked
 
 ### 5.3 `restore <runtime>`
 
-Two modes, to be chosen after the validation in §9:
+Validated: re-import takes under a minute, needs no network, and Xcode then
+shows the platform as installed.
 
-- **Re-import** (offline): detach and unlink; `xcrun simctl runtime add
-  <image>`; verify it is registered; remove the manifest entry; optionally
-  delete the staged image.
-- **Re-download** (fallback): detach and unlink; remove the manifest entry;
-  tell the user to install the platform in Xcode.
+1. Preflight. Refuse if a simulator using the runtime is booted. Check
+   internal free space (image size plus headroom).
+2. Remove the manifest entry, so the agent cannot re-attach it; unlink and
+   eject the offload mount (as in 5.5, for this one runtime).
+3. `xcrun simctl runtime add <image on the volume>`. Never with `--move`.
+4. `xcrun simctl runtime scan-and-mount`, to clear the clone the import leaves
+   in the daemon's inbox (hazard 10).
+5. Verify: the build is registered as a disk image, state Ready.
+6. The image on the volume is kept unless `--delete-image` is given.
+
+If step 3 fails, re-add the manifest entry and run `Sync`, which returns the
+machine to the offloaded state.
 
 ### 5.4 `Sync` (run by the agent and after every change)
 
@@ -256,10 +265,12 @@ result can be re-measured on new OS versions.
 
 In priority order. The first three affect the design.
 
-1. **Restore by re-import.** Does `simctl runtime add` accept the staged image
-   and does Xcode then show the platform as installed? Decides §5.3.
-2. **Abrupt disconnection** with a simulator booted. Decides what `doctor`
-   must detect and repair, and what the README must warn about.
+1. ~~Restore by re-import.~~ **Done:** works; Xcode shows the platform as
+   installed. See [results](results/2026-11-10/restore-by-reimport.md).
+2. ~~Abrupt disconnection.~~ **Done:** survivable and self-healing; no repair
+   path needed beyond `Sync`. See
+   [results](results/2026-11-10/abrupt-disconnection.md). Not yet tried during
+   a build, a debug session or an `offload` copy.
 3. **An Xcode point update.** Does `DeviceKit/Runtimes` survive, and do the
    discovery rules hold?
 4. A week of ordinary use, including sleep, wake and a midnight temporary-file
@@ -278,7 +289,7 @@ In priority order. The first three affect the design.
 | 5 | Licence | MIT or Apache-2.0. Apache-2.0 if you want an explicit patent grant; otherwise MIT for simplicity. |
 | 6 | Signing and distribution | Source build and Homebrew (ad-hoc) first; consider a Developer ID release later if repeated consent prompts prove annoying. |
 | 7 | The shell harness | Keep under `experiments/` as the record of how the mechanism was found; remove the installed agent when the native one replaces it. |
-| 8 | Order of work | Validation items 1 and 2 first, then build. |
+| 8 | Order of work | Validation items 1 and 2 are done; build next. |
 
 ## 11. Build plan
 

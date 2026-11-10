@@ -36,9 +36,8 @@ offer the platform for download, and Xcode cannot manage a runtime registered
 this way. Whether that is acceptable is a product judgement, not a technical
 unknown.
 
-Three things remain untested and could still change the verdict: abrupt
-disconnection, behaviour over days and weeks, and behaviour across an Xcode
-update (§7).
+Two things remain untested and could still change the verdict: behaviour over
+days and weeks, and behaviour across an Xcode update (§7).
 
 ## 2. How runtime storage works on this OS
 
@@ -105,6 +104,9 @@ Each element is the way it is for a reason found by experiment:
 | Deleted internal runtimes after a restart | Stayed deleted. |
 | Eject before unplugging | 12 s; no mounts or links left. |
 | Re-attach after eject | Under 1 s; device boots in 8 s. |
+| Cable pulled with a simulator running | The simulator dies at once; services keep running; the kernel removes the dead mount; nothing to clean up. |
+| Reconnection after that | Runtime registered again in 1 s; device boots; images and filesystem verify clean. |
+| Restore to the internal disk by `simctl runtime add` | 35–40 s, one image of space; Xcode shows the platform as installed again. |
 
 ## 5. Hazards a tool must handle
 
@@ -120,6 +122,7 @@ Each of these was hit in practice.
 | 6 | **Sandboxed helpers constrain the mount location.** Success from the command line does not imply Xcode's interface works. | Fixed location; any change must be re-validated against Xcode's device view. |
 | 7 | **Background access to a removable volume** is attributed to the job's executable. | The agent's executable is the tool; consent is asked once. With ad-hoc signing a rebuild may ask again. |
 | 8 | **Free space is a misleading measure.** Swap on the shared APFS container moved it by 5 GB during an unrelated step. | Measure directory sizes. |
+| 10 | **An import leaves a clone in the daemon's inbox.** After `simctl runtime add`, deleting the runtime does not free its space: a clone in `…/Cryptex/Images/Inbox` keeps the blocks. | Run `simctl runtime scan-and-mount` after every add and delete; verify by measurement. |
 | 9 | **A gap after login.** The runtime cannot exist before the volume is mounted and the image attached. | About 21 s here. Applications started in the gap must recover; Xcode does. |
 
 ## 6. Approaches that do not work
@@ -158,10 +161,9 @@ Each of these was hit in practice.
 
 | Item | Why it matters |
 |---|---|
-| Abrupt disconnection with a simulator running | The one failure a careful eject cannot prevent. |
+| Abrupt disconnection during a build, a debug session or an `offload` copy | Tested once, with an idle app; survivable and self-healing in that case. |
 | Days and weeks of use | Temporary-file cleanup is understood from its script (S) but not observed over time. |
 | An Xcode or macOS update | `DeviceKit` belongs to Xcode's system resources; an update may remove the extra directory, and CoreSimulator's discovery rules may change. |
-| Restoring a runtime to internal storage | Not exercised: `simctl runtime add` from the SSD, or a fresh download. |
 | Other platforms and more than one volume | Only iOS, two builds, one SSD. |
 | Intel Macs, universal runtimes, older macOS | `diskutil image attach` and every discovery rule here are version-specific. |
 | A second user account | The `DeviceKit` directory is system-wide and here is user-owned. |
