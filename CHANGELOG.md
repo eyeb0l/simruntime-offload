@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-11-10
 
 - `eject` restarts the simulator launch helper once for all runtimes instead
   of once per runtime. Restarting a helper that has only just been restarted
