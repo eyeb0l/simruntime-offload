@@ -23,12 +23,15 @@
 #   sro.sh disable <build>                       remove it from the manifest
 #   sro.sh [--dry-run] sync                      attach every manifest runtime whose volume is present;
 #                                                remove the links of those whose volume is absent
+#   sro.sh [--dry-run] eject                     detach every manifest runtime, then eject the volume: run before unplugging
 #   sro.sh agent install|uninstall|status        per-user LaunchAgent that runs `sync` at login and on every mount
 #
 # The external volume is selected by APFS volume UUID, never by name or
 # /dev/diskN:  export SRO_VOLUME_UUID=<uuid>   (see `diskutil info /Volumes/<name>`)
 #
-# Environment:
+# Settings are remembered in ~/Library/Application Support/simruntime-offload/config
+# once `agent install` or `enable` has run, so everyday commands (sync, eject,
+# status) need no environment variables. These override the remembered values:
 #   SRO_VOLUME_UUID   volume used by stage/attach/enable
 #   SRO_MOUNT_ROOT    where images are mounted (default /private/tmp/simruntime-offload-<uid>)
 #   SRO_LINK_DIR      where runtime links are created (default the per-user profile directory)
@@ -41,31 +44,57 @@ if [ "${1:-}" = "--dry-run" ]; then
   shift
 fi
 
-# The mount point must be readable by sandboxed Xcode helpers. CoreDeviceService
-# (which drives Xcode's live device view) is App-Sandboxed and cannot read the
-# user's Library outside its container; mounted there, the runtime works from
-# simctl and xcodebuild but Xcode reports the device as unavailable. Its
-# sandbox does include /private/tmp, which also needs no privileges.
-# Override with SRO_MOUNT_ROOT to test other locations.
-mount_root="${SRO_MOUNT_ROOT:-/private/tmp/simruntime-offload-$(id -u)}"
-profiles_dir="${SRO_LINK_DIR:-$HOME/Library/Developer/CoreSimulator/Profiles/Runtimes}"
-bundle_subpath="Library/Developer/CoreSimulator/Profiles/Runtimes"
-
 state_dir="$HOME/Library/Application Support/simruntime-offload"
 manifest="$state_dir/runtimes.tsv"
+config="$state_dir/config"
 agent_label="dev.simruntime-offload.agent"
 agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
 agent_script="$state_dir/sro.sh"
 agent_binary="$state_dir/sro-agent"
 agent_log_dir="$HOME/Library/Logs/simruntime-offload"
+bundle_subpath="Library/Developer/CoreSimulator/Profiles/Runtimes"
+
+# config_get <key>: print a remembered setting, or nothing. The file holds
+# plain key=value lines and is read, never executed.
+config_get() {
+  [ -f "$config" ] || return 0
+  sed -n "s/^$1=//p" "$config" | head -n 1
+}
+
+# config_set <key> <value>
+config_set() {
+  mkdir -p "$state_dir"
+  touch "$config"
+  local tmp
+  tmp="$(mktemp -t sro-config)"
+  grep -v "^$1=" "$config" >"$tmp" || true
+  printf '%s=%s\n' "$1" "$2" >>"$tmp"
+  mv "$tmp" "$config"
+}
+
+# The mount point must be readable by sandboxed Xcode helpers. CoreDeviceService
+# (which drives Xcode's live device view) is App-Sandboxed and cannot read the
+# user's Library outside its container; mounted there, the runtime works from
+# simctl and xcodebuild but Xcode reports the device as unavailable. Its
+# sandbox does include /private/tmp, which also needs no privileges.
+mount_root="${SRO_MOUNT_ROOT:-$(config_get mount_root)}"
+[ -n "$mount_root" ] || mount_root="/private/tmp/simruntime-offload-$(id -u)"
+profiles_dir="${SRO_LINK_DIR:-$(config_get link_dir)}"
+[ -n "$profiles_dir" ] || profiles_dir="$HOME/Library/Developer/CoreSimulator/Profiles/Runtimes"
+SRO_VOLUME_UUID="${SRO_VOLUME_UUID:-$(config_get volume_uuid)}"
 
 die() {
   echo "error: $*" >&2
   exit 1
 }
 
+timestamps=0
 note() {
-  echo "==> $*"
+  if [ "$timestamps" -eq 1 ]; then
+    echo "[$(date '+%H:%M:%S')] ==> $*"
+  else
+    echo "==> $*"
+  fi
 }
 
 # run <command...>: execute, or print when --dry-run is in effect.
@@ -350,6 +379,7 @@ cmd_enable() {
     die "$build is already in the manifest"
   fi
   printf '%s\t%s\t%s\n' "$build" "$SRO_VOLUME_UUID" "$relative" >>"$manifest"
+  config_set volume_uuid "$SRO_VOLUME_UUID"
   note "Enabled $build ($relative on volume $SRO_VOLUME_UUID)"
 }
 
@@ -398,6 +428,7 @@ sync_one() {
 
 cmd_sync() {
   [ -s "$manifest" ] || { echo "manifest is empty; nothing to sync"; return; }
+  timestamps=1
   echo "--- sync $(date '+%Y-%m-%d %H:%M:%S')"
 
   # launchd starts the agent for every mount, including the ones sync itself
@@ -417,15 +448,58 @@ cmd_sync() {
   trap "rm -rf '$lock'" EXIT
 
   local build uuid relative failures=0
-  while IFS=$'\t' read -r build uuid relative; do
+  # The manifest is read on descriptor 3 so that no command run in the loop can
+  # consume the remaining lines from standard input.
+  while IFS=$'\t' read -r build uuid relative <&3; do
     [ -n "$build" ] || continue
     # One runtime failing must not stop the others.
     if ! (sync_one "$build" "$uuid" "$relative"); then
       echo "$build: sync failed"
       failures=$((failures + 1))
     fi
-  done <"$manifest"
+  done 3<"$manifest"
+  note "sync finished"
   [ "$failures" -eq 0 ] || exit 1
+}
+
+# eject: everything needed before unplugging, in one command. Detaches every
+# runtime in the manifest and then ejects the volume(s) they live on.
+#
+# Unlike `detach`, this forces an unmount that is still refused after the
+# retries: the user has said they are about to remove the disk, and pulling it
+# with a runtime still mounted is worse than a forced unmount of an idle one.
+cmd_eject() {
+  [ -s "$manifest" ] || die "the manifest is empty; nothing to eject"
+  local booted
+  booted="$(booted_device_count)"
+  [ "$booted" = "0" ] ||
+    die "$booted simulator(s) are booted; quit Xcode's run or use: xcrun simctl shutdown all"
+
+  local build uuid relative link volumes=""
+  while IFS=$'\t' read -r build uuid relative <&3; do
+    [ -n "$build" ] || continue
+    link="$profiles_dir/offload-$build.simruntime"
+    if mount | grep -qF " on $mount_root/$build ("; then
+      (cmd_detach "$build" --force) ||
+        die "could not detach $build; the disk is still in use — do not unplug it"
+    elif [ -L "$link" ]; then
+      note "Removing $link"
+      run rm "$link"
+    fi
+    case " $volumes " in
+      *" $uuid "*) ;;
+      *) volumes="$volumes $uuid" ;;
+    esac
+  done 3<"$manifest"
+
+  for uuid in $volumes; do
+    if diskutil info "$uuid" 2>/dev/null | grep -q 'Mounted: *Yes'; then
+      note "Ejecting volume $uuid"
+      run diskutil eject "$uuid" ||
+        die "the volume is still in use by something else — do not unplug it"
+    fi
+  done
+  note "Done. The disk can be unplugged; plugging it back in re-attaches the runtimes."
 }
 
 # --- LaunchAgent ---------------------------------------------------------------
@@ -440,6 +514,9 @@ cmd_agent() {
   case "$action" in
     install)
       mkdir -p "$state_dir" "$agent_log_dir" "$(dirname "$agent_plist")"
+      config_set mount_root "$mount_root"
+      config_set link_dir "$profiles_dir"
+      [ -z "$SRO_VOLUME_UUID" ] || config_set volume_uuid "$SRO_VOLUME_UUID"
       # The agent runs a copy, so moving or editing the working tree cannot
       # change what launchd executes.
       cp "$0" "$agent_script"
@@ -450,9 +527,16 @@ cmd_agent() {
       local source_dir
       source_dir="$(cd "$(dirname "$0")" && pwd)"
       [ -f "$source_dir/agent/sro-agent.swift" ] || die "agent/sro-agent.swift not found next to $0"
-      note "Building the agent launcher"
-      xcrun swiftc -O -o "$agent_binary" "$source_dir/agent/sro-agent.swift"
-      codesign --force --sign - --identifier "$agent_label" "$agent_binary"
+      local source_sum
+      source_sum="$(sha256_of "$source_dir/agent/sro-agent.swift")"
+      if [ -x "$agent_binary" ] && [ "$(cat "$agent_binary.source-sha256" 2>/dev/null)" = "$source_sum" ]; then
+        note "Agent launcher is up to date; keeping it (and its consent)"
+      else
+        note "Building the agent launcher"
+        xcrun swiftc -O -o "$agent_binary" "$source_dir/agent/sro-agent.swift"
+        codesign --force --sign - --identifier "$agent_label" "$agent_binary"
+        printf '%s\n' "$source_sum" >"$agent_binary.source-sha256"
+      fi
       cat >"$agent_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -476,7 +560,7 @@ cmd_agent() {
   <key>StartOnMount</key>
   <true/>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>$agent_log_dir/agent.log</string>
   <key>StandardErrorPath</key>
@@ -491,7 +575,7 @@ PLIST
       ;;
     uninstall)
       launchctl bootout "$domain/$agent_label" 2>/dev/null || true
-      rm -f "$agent_plist" "$agent_script" "$agent_binary"
+      rm -f "$agent_plist" "$agent_script" "$agent_binary" "$agent_binary.source-sha256"
       note "Uninstalled $agent_label (manifest, mounts and links are untouched)"
       ;;
     status)
@@ -514,9 +598,10 @@ case "${1:-}" in
   enable) shift; cmd_enable "$@" ;;
   disable) shift; cmd_disable "$@" ;;
   sync) cmd_sync ;;
+  eject) cmd_eject ;;
   agent) shift; cmd_agent "$@" ;;
   *)
-    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
     exit 64
     ;;
 esac

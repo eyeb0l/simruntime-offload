@@ -326,3 +326,20 @@ link directory is unchanged until H26 is settled.
 
 Mistakes recorded: the SSD copy of 24B114 was removed without gating on the
 internal delete's success; the errexit bug in `sync`.
+
+---
+
+## Session 7 — 2026-11-10 — restart with the SSD connected
+
+Full results: [results/2026-11-10/restart-with-ssd.md](results/2026-11-10/restart-with-ssd.md).
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H37 | The agent restores both runtimes after a restart. | **Confirmed**, but only 2.5 minutes after login. (V) |
+| H38 | A deleted internal runtime stays deleted across a restart. | **Confirmed** on Xcode 27.2. (V) |
+| H39 | The slow first attach was a consent prompt. | **Refuted**; no prompt appeared. Cause open; background-priority throttling suspected. |
+| H26 | A home-independent registration clears Xcode's "unavailable" label. | **Label cleared after the restart**, but confounded with `CoreDeviceService` being fresh. |
+
+Open: live recovery of Xcode's interface when runtimes arrive late; the cause
+of the login delay; which change cleared the label; Xcode's "Get" badge on the
+generic simulator destination.
