@@ -27,7 +27,8 @@ elevated privileges.
 
 ### Evidence collected
 
-1. **Baseline** (V). `scripts/collect-baseline.sh` → `docs/baseline/2026-11-10/`.
+1. **Baseline** (V). `scripts/collect-baseline.sh` → `docs/baseline/2026-11-10/`
+   (machine-specific; since removed from the repository and its history).
    Two iOS 27.2 runtimes (24B114, 24B8117), 7.7 GiB each, kind "Patchable
    Cryptex Disk Image", state Ready. One device, runtime policy "System". The
    iOS 27.2 SDK (24B8118) selects 24B8117. Internal disk 245 GB, 71 GiB free.
@@ -643,9 +644,10 @@ Decisions:
   the agent at 21:52:29, no permission errors (H66, confirmed, V, one run).
   Tagged after that.
 
-Open before publication, for the project owner:
+Open before publication, for the project owner (both settled the same day:
+see session 17):
 
-- `docs/baseline/` and three other files record this machine's volume UUID.
+- `docs/baseline/` and two other files record this machine's volume UUID.
   The baseline was always meant to go before a public release, and removing
   it from the tree does not remove it from the history.
 - The copyright line in `LICENSE` was taken from the git configuration.
@@ -656,3 +658,55 @@ Open before publication, for the project owner:
 State left on the machine: iOS 27.0 and 27.2 served from the volume, none on
 the internal disk, the 0.1.0 agent loaded, nothing booted. The disposable
 runtime and its devices are gone.
+
+---
+
+## Session 17 — 2026-11-10 — history rewritten; a faster eject
+
+**The baseline was removed from the branch's history**, at the project owner's
+request, before anything of the branch had been pushed. `docs/baseline/` is
+gone from every commit, and the volume's UUID was replaced with a placeholder
+in the two other documents that carried it. `docs/baseline/` is now ignored.
+
+Mistake: the first rewrite was run over the whole branch including the
+repository's initial commit. Every commit here is SSH-signed and the rewrite
+tool discards signatures, so the initial commit came out with a new hash
+although its content was unchanged. That is the one commit shared with `main`
+on the remote; the branch would have ended up with unrelated history. Caught
+by the verification that followed (the list of subjects came out one short),
+and repaired by replaying the rewritten commits onto the original initial
+commit, signing each and keeping its dates. A rewrite should have been limited
+to the commits after the shared one from the start, and I should have checked
+for signatures before choosing the tool.
+
+Verified afterwards: no commit of the branch or the tag contains the baseline
+or the UUID; the tree at the tip differs from the old tip only by those; the
+thirteen commit subjects and dates are unchanged; all commits verify as
+signed; the branch's merge base with `origin/main` is the original initial
+commit; `v0.1.0` was recreated on the new tip with the same message.
+
+Still present locally, and not pushed by an ordinary `git push`: the
+application's own checkpoint refs under `refs/t3/`, which snapshot the working
+tree and so contain the old files, and a backup bundle of the old history in
+`.git/`. A mirror push would send the former.
+
+**`eject` was made faster.**
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H67 | Most of `eject`'s time is the launch helper restart. | **Confirmed, with a twist.** A restart of a helper that has been running a while returns at once; a restart of one that was itself just restarted takes 10.0 s. The per-runtime restarts therefore cost ten seconds for every runtime after the first, which matches the 13 s and 23 s measured for two and three. (V) |
+| H68 | One restart, after every link is removed, is enough for all runtimes. | **Confirmed**: 2.5–3.5 s for two runtimes over four runs, first attempt each time, the first run straight after shutting down a simulator on each runtime with about 3,500 files open under the two mounts. (V) |
+
+The crash reports written at the moment of that run (`linkd`, `akd`,
+`ScreenTimeSettingsAgent`, `logd`) are not caused by `eject`. They are
+simulator daemons killed by the simulator's own launchd for ignoring its
+shutdown signal (`XPC_EXIT_REASON_SIGTERM_TIMEOUT`), and the same kind of
+report follows every simulator shutdown of the day, with or without an eject.
+
+A consequence of the change, recorded in the error message and the changelog:
+when an image stays in use, `eject` now stops with every runtime
+unregistered, not only those before the busy one.
+
+From the project owner: a consent prompt did appear when the agent was
+reinstalled during the system test, and she approved it. That settles the
+cause of the 50 s stall recorded in session 16 (H64).

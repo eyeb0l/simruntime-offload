@@ -140,7 +140,8 @@ Rollback, in order:
    the disposable runtime.
 
 After rollback, `xcrun simctl runtime list` must show exactly the two runtimes
-in `docs/baseline/2026-11-10/runtimes-disk-images.txt`, both `Ready`.
+in `docs/baseline/2026-11-10/runtimes-disk-images.txt` (since removed from the
+repository), both `Ready`.
 
 ### Stop conditions
 

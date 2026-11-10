@@ -3,8 +3,8 @@
 Status: consolidated after nine sessions of investigation and experiment on
 2026-11-10, and updated after the native tool was built and system-tested the
 same day (§4, §7). This replaces the initial assessment written before any
-experiment was run; that version is in the repository history (commit
-`ac93e63`).
+experiment was run; that version is in the repository history (the first
+commit after the initial one).
 
 Scope of validity: **macOS 27.2.1 (26B131), Xcode 27.2 (27B52), CoreSimulator
 1174.21, Apple silicon, one machine.** The storage design for Simulator
@@ -118,7 +118,7 @@ The rows above were established with the shell harness. With the native tool,
 | `offload` of a freshly downloaded runtime | 54 s for 7.9 GB: copy, two checksums, image verification, delete, attach. Internal store empty afterwards. |
 | `offload` of a runtime whose image is still on the volume | 22 s; the image is compared and reused, not copied. |
 | `restore` | 40 s; the others untouched. |
-| `eject` | 13 s for two runtimes, 23 s for three; first attempt each time, straight after a simulator shutdown. |
+| `eject` | 13 s for two runtimes and 23 s for three in 0.1.0. After 0.1.0, with the launch helper restarted once rather than per runtime: 2.5–3.5 s for two, over four runs, one of them straight after shutting down a simulator on each runtime. First attempt every time. |
 | Remount or replug after `eject` | Every runtime back within seconds, with no other action. |
 | `uninstall`, then `setup` and offloading again | 85 s out, about 50 s back, for two runtimes; nothing of the tool left in between. |
 | First boot of a new device, same runtime | 38 s from the volume; 35 s from the internal disk. |

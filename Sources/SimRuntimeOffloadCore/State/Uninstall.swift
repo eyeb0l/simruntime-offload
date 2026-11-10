@@ -117,11 +117,10 @@ public struct Uninstaller {
             report(.removedAgent)
             let lock = try StateLock.acquire(paths: paths)
             defer { lock.release() }
-            for runtime in plan.released {
-                _ = try releaser.release(build: runtime.build, forceUnmount: forceUnmount)
-                report(.stoppedServing(build: runtime.build))
-                summary.imagesKept.append(location(of: runtime))
-            }
+            try releaser.releaseAll(
+                builds: plan.released.map(\.build), forceUnmount: forceUnmount,
+                released: { build, _ in report(.stoppedServing(build: build)) })
+            summary.imagesKept += plan.released.map(location(of:))
         } else {
             for restore in plan.restores {
                 report(.restoring(build: restore.entry.build))

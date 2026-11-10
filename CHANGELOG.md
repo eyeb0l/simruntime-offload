@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `eject` restarts the simulator launch helper once for all runtimes instead
+  of once per runtime. Restarting a helper that has only just been restarted
+  takes about ten seconds, so every runtime after the first cost that much:
+  13 s for two, 23 s for three. It now takes about 3 s however many there are.
+  If an image stays in use, every runtime is unregistered by the time `eject`
+  stops, not only the ones before it; `sync` serves them again.
+
 ## 0.1.0 — 2026-11-10
 
 First version. Validated on macOS 27.2, Xcode 27.2, CoreSimulator 1174, Apple

@@ -10,7 +10,7 @@ public enum EjectError: Error, Equatable, CustomStringConvertible {
         case .simulatorsBooted(let names):
             return "these simulators are booted: \(names.joined(separator: ", ")). Shut them down first; nothing was changed"
         case .stillInUse(let build, let message):
-            return "the runtime \(build) is unregistered but its volume is still in use (\(message)). This is usually the system's sampling daemon holding simulator binaries. Do not unplug the disk. Either try again shortly, or run `simruntime-offload eject --force-unmount`"
+            return "every runtime is unregistered, but the image of \(build) is still in use (\(message)). This is usually the system's sampling daemon holding simulator binaries. Do not unplug the disk. Try `simruntime-offload eject` again shortly, or with --force-unmount; or run `simruntime-offload sync` to go back to serving the runtimes"
         case .volumeBusy(let name, let message):
             return "the runtimes are released but \"\(name)\" could not be ejected (\(message)). Something else is using the disk; do not unplug it"
         }
@@ -73,14 +73,14 @@ public struct Ejector {
 
         let releaser = Releaser(
             paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause)
-        for runtime in manifest.runtimes {
-            let build = runtime.build
-            report(.unregistering(build: build))
-            switch try releaser.release(build: build, forceUnmount: forceUnmount, willForce: { report(.forcing(build: build)) }) {
-            case .notAttached, .forced: break
-            case .ejected(let attempts): report(.ejected(build: build, attempts: attempts))
-            }
-        }
+        let builds = manifest.runtimes.map(\.build)
+        for build in builds { report(.unregistering(build: build)) }
+        try releaser.releaseAll(
+            builds: builds, forceUnmount: forceUnmount,
+            willForce: { report(.forcing(build: $0)) },
+            released: { build, outcome in
+                if case .ejected(let attempts) = outcome { report(.ejected(build: build, attempts: attempts)) }
+            })
 
         var seen = Set<String>()
         for uuid in manifest.runtimes.map(\.volumeUUID) where seen.insert(uuid).inserted {
@@ -122,18 +122,51 @@ struct Releaser {
     let fileSystem: FileSystemProbing
     let pause: (TimeInterval) -> Void
 
-    /// Throws `EjectError.stillInUse` when the image stays busy and
-    /// `forceUnmount` is false. The link is already gone by then.
+    /// Stops serving one runtime.
     func release(build: String, forceUnmount: Bool, willForce: () -> Void = {}) throws -> Outcome {
-        let mountPoint = paths.mountPoint(forBuild: build)
-        // Unregister first; CoreSimulator unloads the runtime when the link
-        // goes and again when asked to approve the unmount.
-        try Registry(paths: paths).unlink(build: build)
-        guard fileSystem.isMountPoint(mountPoint) else { return .notAttached }
+        var outcome = Outcome.notAttached
+        try releaseAll(
+            builds: [build], forceUnmount: forceUnmount,
+            willForce: { _ in willForce() }, released: { _, result in outcome = result })
+        return outcome
+    }
+
+    /// Stops serving several runtimes, restarting the launch helper once for
+    /// all of them. One restart is quick, but restarting a helper that has
+    /// only just been restarted takes about ten seconds, so a restart per
+    /// runtime made every runtime after the first cost that much.
+    ///
+    /// Throws `EjectError.stillInUse` for the first image that stays busy when
+    /// `forceUnmount` is false. Every link is already gone by then, and the
+    /// images before it are ejected; `sync` puts all of it back.
+    func releaseAll(
+        builds: [String], forceUnmount: Bool,
+        willForce: (String) -> Void = { _ in },
+        released: (String, Outcome) -> Void = { _, _ in }
+    ) throws {
+        // Unregister everything first. CoreSimulator unloads a runtime when
+        // its link goes, and with every link gone the restarted helper has no
+        // offloaded runtime left to load a library from.
+        let registry = Registry(paths: paths)
+        for build in builds { try registry.unlink(build: build) }
+
+        let attached = builds.filter { fileSystem.isMountPoint(paths.mountPoint(forBuild: $0)) }
+        for build in builds where !attached.contains(build) { released(build, .notAttached) }
+        guard !attached.isEmpty else { return }
+
         pause(1)
         // The launch helper keeps a library from the runtime mapped.
         services.restartLaunchHost()
 
+        for build in attached {
+            let mountPoint = paths.mountPoint(forBuild: build)
+            released(build, try eject(mountPoint, build: build, forceUnmount: forceUnmount, willForce: willForce))
+        }
+    }
+
+    private func eject(
+        _ mountPoint: String, build: String, forceUnmount: Bool, willForce: (String) -> Void
+    ) throws -> Outcome {
         // A shut-down simulator's processes can take a few seconds to exit,
         // longer under a debugger; retrying tells that apart from a real hold.
         var lastMessage = ""
@@ -147,7 +180,7 @@ struct Releaser {
             }
         }
         guard forceUnmount else { throw EjectError.stillInUse(build: build, message: lastMessage) }
-        willForce()
+        willForce(build)
         try attacher.forceEject(mountPoint: mountPoint)
         return .forced
     }

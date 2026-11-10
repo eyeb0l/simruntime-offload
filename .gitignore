@@ -10,3 +10,7 @@ build/
 # Swift Package Manager
 .build/
 .swiftpm/
+
+# Diagnostic snapshots from scripts/collect-baseline.sh. They describe one
+# machine; keep them out of the repository.
+docs/baseline/

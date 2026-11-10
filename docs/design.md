@@ -221,8 +221,12 @@ Serialised by a lock. One runtime failing does not stop the others.
 ### 5.5 `eject`
 
 1. Refuse if any simulator is booted, naming them.
-2. For each mounted runtime: remove the link; wait for CoreSimulator to unload
-   it; restart `SimLaunchHost` (hazard 3); eject, retrying for ten seconds (hazard 5).
+2. Remove every runtime's link and wait for CoreSimulator to unload them;
+   restart `SimLaunchHost` once (hazard 3); then eject each mounted image,
+   retrying for ten seconds (hazard 5). As first built this was done runtime
+   by runtime, with a restart for each. The first restart is quick, but
+   restarting a helper that has only just been restarted takes about ten
+   seconds, so each further runtime added ten seconds to `eject`.
 3. If a volume is still held: identify the holder where possible and stop,
    unless `--force-unmount` was given, in which case force it (hazard 4).
 4. Eject the physical disk holding the volume, which unmounts every volume on

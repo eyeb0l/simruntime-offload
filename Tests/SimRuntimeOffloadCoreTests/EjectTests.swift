@@ -72,16 +72,49 @@ final class EjectTests: ScratchTestCase {
     func testReleasesEveryRuntimeThenTheVolumeOnce() throws {
         try eject()
         XCTAssertEqual(events, [
-            .unregistering(build: "24A434"), .ejected(build: "24A434", attempts: 1),
-            .unregistering(build: "24B8117"), .ejected(build: "24B8117", attempts: 1),
+            .unregistering(build: "24A434"), .unregistering(build: "24B8117"),
+            .ejected(build: "24A434", attempts: 1), .ejected(build: "24B8117", attempts: 1),
             .ejectedVolume(name: "External"),
         ])
         XCTAssertTrue(attacher.attached.isEmpty)
         XCTAssertNil(try? files.destinationOfSymbolicLink(atPath: link("24A434")))
         XCTAssertNil(try? files.destinationOfSymbolicLink(atPath: link("24B8117")))
-        XCTAssertEqual(services.launchHostRestarts, 2, "the helper is restarted before each eject")
+        XCTAssertEqual(services.launchHostRestarts, 1, "the helper is restarted once, however many runtimes there are")
         XCTAssertEqual(ejectedVolumes, [uuid], "two runtimes on one volume eject it once")
         XCTAssertTrue(attacher.forced.isEmpty)
+    }
+
+    func testEveryLinkIsGoneBeforeTheHelperIsRestarted() throws {
+        final class Observer: ServiceControlling {
+            var linksAtRestart: [String] = []
+            let directory: String
+            init(directory: String) { self.directory = directory }
+            func restartLaunchHost() {
+                linksAtRestart = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? ["?"]
+            }
+            func restartCoreSimulatorService() {}
+        }
+        let observer = Observer(directory: sharedLinks)
+        try Ejector(
+            paths: paths, simulators: simulators, attacher: attacher, services: observer, fileSystem: attacher,
+            volumeLookup: { _ in nil }, ejectVolume: { _ in nil }, pause: { _ in }
+        ).run(manifest: manifest, forceUnmount: false)
+        XCTAssertEqual(observer.linksAtRestart, [], "the restarted helper must find no offloaded runtime to load from")
+        XCTAssertTrue(attacher.attached.isEmpty)
+    }
+
+    func testAHoldOnALaterRuntimeLeavesTheEarlierOnesEjectedAndEverythingUnlinked() {
+        // First runtime ejects at once; the second never does.
+        attacher.busyEjects = 0
+        attacher.busyAfterFirstSuccess = true
+        XCTAssertThrowsError(try eject()) { error in
+            guard case .stillInUse(let build, _)? = error as? EjectError else { return XCTFail("\(error)") }
+            XCTAssertEqual(build, "24B8117")
+        }
+        XCTAssertNil(attacher.attached[paths.mountPoint(forBuild: "24A434")])
+        XCTAssertNotNil(attacher.attached[paths.mountPoint(forBuild: "24B8117")])
+        XCTAssertEqual(try? files.contentsOfDirectory(atPath: sharedLinks), [])
+        XCTAssertTrue(ejectedVolumes.isEmpty)
     }
 
     func testRetriesAVolumeThatIsBrieflyBusy() throws {

@@ -24,7 +24,13 @@ final class FakeAttacher: ImageAttaching, FileSystemProbing {
     var busyEjects = 0
     private(set) var forced: [String] = []
 
+    /// Every eject after the first successful one fails as busy.
+    var busyAfterFirstSuccess = false
+
     func eject(mountPoint: String) throws {
+        if busyAfterFirstSuccess, !ejected.isEmpty {
+            throw AttachError.busy(mountPoint: mountPoint, message: "at least one volume could not be unmounted")
+        }
         if busyEjects > 0 {
             busyEjects -= 1
             throw AttachError.busy(mountPoint: mountPoint, message: "at least one volume could not be unmounted")
