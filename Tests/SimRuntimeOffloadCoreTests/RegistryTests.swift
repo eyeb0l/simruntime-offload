@@ -21,7 +21,9 @@ class ScratchTestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        try? files.removeItem(atPath: root)
+        // A subclass that skips before calling super.setUp still gets here,
+        // with no root.
+        if let root { try? files.removeItem(atPath: root) }
     }
 
     /// Creates a directory that looks like a mounted runtime image and returns
