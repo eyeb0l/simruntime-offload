@@ -10,6 +10,8 @@ struct FakeFileSystem: FileSystemProbing {
     func fileExists(_ path: String) -> Bool { files.contains(path) }
     func isMountPoint(_ path: String) -> Bool { mountPoints.contains(path) }
     func symbolicLinkDestination(_ path: String) -> String? { links[path] }
+    var directories: [String: [String]] = [:]
+    func contentsOfDirectory(_ path: String) -> [String] { directories[path] ?? [] }
 }
 
 final class InventoryTests: XCTestCase {

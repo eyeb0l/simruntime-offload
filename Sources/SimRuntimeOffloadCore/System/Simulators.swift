@@ -54,11 +54,25 @@ public enum SimulatorsError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// What the tool needs from CoreSimulator. A protocol so that the offload and
+/// eject flows can be tested without a simulator.
+public protocol SimulatorControlling {
+    func images() throws -> [RuntimeImage]
+    func runtimes() throws -> [Runtime]
+    func devices() throws -> [Device]
+    /// Asks CoreSimulator to delete a registered image. A failure here does not
+    /// settle whether the image is gone; callers check.
+    func deleteImage(identifier: String) throws
+    /// Makes the disk-image daemon rescan its storage, which also clears its
+    /// inbox of leftovers.
+    func scanAndMount() throws
+}
+
 /// CoreSimulator, through its command-line tool.
 ///
 /// CoreSimulator has no public API. `simctl` is the supported interface, and
 /// only its JSON output is parsed, never its human-readable text.
-public struct Simulators {
+public struct Simulators: SimulatorControlling {
     private let runner: ProcessRunning
 
     public init(runner: ProcessRunning = SystemProcessRunner()) {
@@ -75,6 +89,14 @@ public struct Simulators {
 
     public func devices() throws -> [Device] {
         try Simulators.parseDevices(simctl(["list", "devices", "-j"]))
+    }
+
+    public func deleteImage(identifier: String) throws {
+        _ = try simctl(["runtime", "delete", identifier])
+    }
+
+    public func scanAndMount() throws {
+        _ = try simctl(["runtime", "scan-and-mount"])
     }
 
     private func simctl(_ arguments: [String]) throws -> Data {

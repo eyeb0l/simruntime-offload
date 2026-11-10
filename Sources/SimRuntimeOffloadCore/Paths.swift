@@ -73,6 +73,14 @@ public struct Paths: Sendable {
 
     // MARK: System locations that are only read
 
+    /// Where the disk-image daemon stages images. An import leaves a clone
+    /// here that keeps its space allocated after the runtime is deleted, until
+    /// a scan clears it; so "reclaimed" includes these being empty.
+    public static let daemonInboxes = [
+        "/Library/Developer/CoreSimulator/Images/Inbox",
+        "/Library/Developer/CoreSimulator/Cryptex/Images/Inbox",
+    ]
+
     public static let coreSimulatorInfoPropertyList =
         "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/Info.plist"
 }

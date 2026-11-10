@@ -20,10 +20,28 @@ final class FakeAttacher: ImageAttaching, FileSystemProbing {
         }
     }
 
+    /// How many eject attempts fail as busy before one succeeds.
+    var busyEjects = 0
+    private(set) var forced: [String] = []
+
     func eject(mountPoint: String) throws {
+        if busyEjects > 0 {
+            busyEjects -= 1
+            throw AttachError.busy(mountPoint: mountPoint, message: "at least one volume could not be unmounted")
+        }
         attached[mountPoint] = nil
         ejected.append(mountPoint)
         try? files.removeItem(atPath: "\(mountPoint)/Library")
+    }
+
+    func forceEject(mountPoint: String) throws {
+        attached[mountPoint] = nil
+        forced.append(mountPoint)
+        try? files.removeItem(atPath: "\(mountPoint)/Library")
+    }
+
+    func contentsOfDirectory(_ path: String) -> [String] {
+        (try? files.contentsOfDirectory(atPath: path)) ?? []
     }
 
     // The file system as the fake sees it: real files, fake mounts.

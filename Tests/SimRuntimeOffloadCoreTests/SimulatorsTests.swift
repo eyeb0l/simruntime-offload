@@ -85,6 +85,33 @@ final class VolumesTests: XCTestCase {
         XCTAssertNil(Volumes.parse(data)?.mountPoint)
     }
 
+    func testEjectsTheWholePhysicalDiskNotJustTheVolume() throws {
+        let runner = RecordingRunner()
+        runner.result = ProcessResult(status: 0, standardOutput: fixture("diskutil-info-volume.plist"))
+        XCTAssertNil(Volumes(runner: runner).eject(uuid: "11111111-2222-3333-4444-555555555555"))
+        // The volume is disk7s1 in container disk7, whose store is disk6s2.
+        XCTAssertEqual(Volumes.physicalDisk(fixture("diskutil-info-volume.plist")), "disk6")
+        XCTAssertEqual(runner.invocations.last, ["/usr/sbin/diskutil", "eject", "disk6"])
+    }
+
+    func testNeverEjectsAnInternalDisk() throws {
+        var plist = try PropertyListSerialization.propertyList(
+            from: fixture("diskutil-info-volume.plist"), format: nil) as! [String: Any]
+        plist["Internal"] = true
+        let runner = RecordingRunner()
+        runner.result = ProcessResult(
+            status: 0,
+            standardOutput: try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0))
+        XCTAssertNotNil(Volumes(runner: runner).eject(uuid: "11111111-2222-3333-4444-555555555555"))
+        XCTAssertFalse(runner.invocations.contains { $0.contains("eject") })
+    }
+
+    func testFallsBackToTheParentDiskForANonAPFSVolume() throws {
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["ParentWholeDisk": "disk9", "DeviceIdentifier": "disk9s1"], format: .xml, options: 0)
+        XCTAssertEqual(Volumes.physicalDisk(data), "disk9")
+    }
+
     func testAnUnknownVolumeIsNilNotAnError() {
         let missing = Volumes(runner: StubRunner(results: [
             "/usr/sbin/diskutil": ProcessResult(status: 1, standardError: Data("Could not find disk".utf8))

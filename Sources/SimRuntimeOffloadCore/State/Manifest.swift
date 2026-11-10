@@ -11,11 +11,17 @@ public struct OffloadedRuntime: Codable, Equatable, Sendable {
     public var sha256: String?
     public var sizeBytes: Int64?
     public var offloadedAt: Date?
+    /// True while the image has been copied to the volume but the internal copy
+    /// has not yet been removed. A staged runtime is never attached, because
+    /// the same build must not be registered twice.
+    public var staged: Bool?
+
+    public var isStaged: Bool { staged ?? false }
 
     public init(
         build: String, runtimeIdentifier: String? = nil, name: String? = nil,
         volumeUUID: String, imagePath: String, sha256: String? = nil,
-        sizeBytes: Int64? = nil, offloadedAt: Date? = nil
+        sizeBytes: Int64? = nil, offloadedAt: Date? = nil, staged: Bool? = nil
     ) {
         self.build = build
         self.runtimeIdentifier = runtimeIdentifier
@@ -25,6 +31,7 @@ public struct OffloadedRuntime: Codable, Equatable, Sendable {
         self.sha256 = sha256
         self.sizeBytes = sizeBytes
         self.offloadedAt = offloadedAt
+        self.staged = staged
     }
 }
 

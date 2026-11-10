@@ -7,18 +7,23 @@ external storage, reliably enough that it could be trusted for everyday
 development.
 
 **Status: the mechanism is proven on one machine; the native tool is under
-construction.** `doctor`, `list`, `setup` and `sync` work, and its login agent
-keeps two runtimes served from an external SSD on macOS 27.2 / Xcode 27.2.
-Offloading, restoring and ejecting are still done by a shell harness in
-`experiments/`. Do not run either on a machine you
-care about without reading the assessment first.
+construction.** `doctor`, `list`, `setup`, `sync`, `offload` and `eject` exist,
+and its login agent keeps three runtimes served from an external SSD on macOS
+27.2 / Xcode 27.2. `restore` and `uninstall` are not built yet, so there is no
+native way back: do not run it on a machine you care about without reading the
+assessment first.
 
 ```
 swift build
 swift test                                  # unit tests, plus one test that mounts a tiny synthetic image
 .build/debug/simruntime-offload doctor      # can the tool work on this Mac? changes nothing
 .build/debug/simruntime-offload list        # what is on the internal disk and what is offloaded
+.build/debug/simruntime-offload offload <build> --volume <UUID> --dry-run
+.build/debug/simruntime-offload eject --dry-run
 ```
+
+`offload` and `eject` change the machine; both take `--dry-run`, which prints
+the plan and changes nothing.
 
 ## Documents
 
@@ -38,7 +43,7 @@ swift test                                  # unit tests, plus one test that mou
 | Path | Purpose |
 |---|---|
 | `Sources/`, `Tests/` | The native tool: a Swift package with no dependencies. |
-| `experiments/sro.sh` | The harness: stage, attach, detach, sync, eject and a login agent. Not the deliverable. |
+| `experiments/sro.sh` | The harness the mechanism was developed with. Superseded by the native tool except for restoring; not the deliverable. |
 | `experiments/agent/` | The native launcher the login agent needs. |
 | `experiments/bench/` | Read benchmarks used to compare disk-image stacks. |
 | `fixtures/HelloSim/` | Minimal iOS app used to test build, install and launch. |

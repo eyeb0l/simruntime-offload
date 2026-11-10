@@ -10,12 +10,19 @@ let usage = """
       simruntime-offload doctor [--json]    check whether the tool can work on this Mac; changes nothing
       simruntime-offload list               runtimes on the internal disk and on external volumes; changes nothing
       simruntime-offload setup [--dry-run]  adopt existing state and install the login agent
+      simruntime-offload offload <runtime> [--volume <UUID>] [--dry-run]
+                                            copy a runtime to the volume, verify it, remove the internal
+                                            copy and serve it from the volume
+      simruntime-offload eject [--force-unmount] [--dry-run]
+                                            release every offloaded runtime and the volume, to unplug it
       simruntime-offload sync               attach what is available, tidy what is not; what the agent runs
       simruntime-offload --version
       simruntime-offload help
 
-    This is a development build. Offloading, restoring and ejecting are still
-    done with the harness in experiments/. See docs/design.md for the plan.
+    <runtime> is a build number or image identifier, as shown by `list`.
+
+    This is a development build. Restoring a runtime to the internal disk is
+    not implemented yet. See docs/design.md for the plan.
     """
 
 func printError(_ message: String) {
@@ -80,6 +87,7 @@ func describe(_ state: OffloadState) -> String {
     case .notAttached: return "not attached"
     case .notLinked: return "attached but not linked"
     case .notRegistered: return "linked but not registered with CoreSimulator"
+    case .staged: return "copied to the volume; internal copy not yet removed"
     }
 }
 
@@ -193,15 +201,7 @@ func runSetup(arguments: [String]) -> Int32 {
     let action = dryRun ? "Would" : "Will"
 
     // 1. Never set up on a machine the tool has not been validated for.
-    let checks = Doctor(paths: paths, probe: SystemProbe()).run()
-    guard Doctor.passed(checks) else {
-        printError("setup: this Mac does not pass the preflight checks:")
-        for check in checks where check.status == .failure {
-            printError("  \(check.summary)")
-            if let remedy = check.remedy { printError("    \(remedy)") }
-        }
-        return 1
-    }
+    guard preflightPassed(for: "setup", paths: paths) else { return 1 }
 
     // 2. The link directory. Creating the shared one is the single privileged
     //    step, and it is left to the user to run, so that nothing here ever
@@ -222,23 +222,23 @@ func runSetup(arguments: [String]) -> Int32 {
             """)
     }
 
-    // 3. Adopt what the experiment harness recorded, if anything.
+    // 3. Adopt what the experiment harness recorded, but only when there is
+    //    no manifest yet. Once one exists it is authoritative: the harness's
+    //    list knows nothing of what this tool has offloaded since, and
+    //    following it again would forget those runtimes.
     let store = ManifestStore(paths: paths)
     do {
         let existing = try store.load()
-        if let harness = store.harnessRuntimes() {
+        let hasManifest = FileManager.default.fileExists(atPath: paths.manifest)
+        if !hasManifest, let harness = store.harnessRuntimes() {
             let volumes = Volumes()
             let adopted = Adoption(paths: paths, volumeLookup: volumes.volume(uuid:)).manifest(
                 adopting: harness, existing: existing, runtimes: (try? Simulators().runtimes()) ?? [])
-            if adopted == existing {
-                print("Manifest: up to date (\(existing.runtimes.count) runtime(s)).")
-            } else {
-                let builds = adopted.runtimes.map { $0.build }.joined(separator: ", ")
-                print("Manifest: \(action.lowercased()) record \(builds) from the experiment harness.")
-                if !dryRun { try store.save(adopted) }
-            }
+            let builds = adopted.runtimes.map { $0.build }.joined(separator: ", ")
+            print("Manifest: \(action.lowercased()) record \(builds) from the experiment harness.")
+            if !dryRun { try store.save(adopted) }
         } else {
-            print("Manifest: \(existing.runtimes.count) runtime(s); nothing to adopt.")
+            print("Manifest: \(existing.runtimes.count) runtime(s).")
         }
     } catch {
         printError("setup: \(error)")
@@ -281,8 +281,182 @@ func runSetup(arguments: [String]) -> Int32 {
     return 0
 }
 
+/// Runs the preflight checks and reports failures. Commands that change
+/// anything call this first.
+func preflightPassed(for command: String, paths: Paths) -> Bool {
+    let checks = Doctor(paths: paths, probe: SystemProbe()).run()
+    if Doctor.passed(checks) { return true }
+    printError("\(command): this Mac does not pass the preflight checks:")
+    for check in checks where check.status == .failure {
+        printError("  \(check.summary)")
+        if let remedy = check.remedy { printError("    \(remedy)") }
+    }
+    return false
+}
+
+func runOffload(arguments: [String]) -> Int32 {
+    var runtime: String?
+    var volumeUUID: String?
+    var dryRun = false
+    var index = 0
+    while index < arguments.count {
+        let argument = arguments[index]
+        switch argument {
+        case "--dry-run": dryRun = true
+        case "--volume":
+            index += 1
+            guard index < arguments.count else {
+                printError("offload: --volume needs a volume UUID")
+                return 64
+            }
+            volumeUUID = arguments[index]
+        default:
+            guard !argument.hasPrefix("-"), runtime == nil else {
+                printError("offload: unexpected argument \(argument)")
+                return 64
+            }
+            runtime = argument
+        }
+        index += 1
+    }
+    guard let runtime else {
+        printError("offload: name the runtime to offload (a build number or identifier from `list`)")
+        return 64
+    }
+
+    let paths = Paths(home: NSHomeDirectory(), userID: getuid())
+    guard preflightPassed(for: "offload", paths: paths) else { return 1 }
+
+    let simulators = Simulators()
+    let volumes = Volumes()
+    var lastDecile = -1
+    let offloader = Offloader(
+        paths: paths,
+        simulators: simulators,
+        volumeLookup: volumes.volume(uuid:),
+        imageStore: ImageStore(),
+        services: Services(userID: paths.userID),
+        sync: { manifest in
+            try Sync(paths: paths, volumeLookup: volumes.volume(uuid:))
+                .run(manifest: manifest, registeredRuntimes: { try simulators.runtimes() })
+        },
+        report: { event in
+            switch event {
+            case .copying(let source, let destination):
+                print("Copying \(source)\n     to \(destination)")
+            case .copyProgress(let done, let total):
+                let decile = total > 0 ? Int(done * 10 / total) : 0
+                if decile != lastDecile {
+                    lastDecile = decile
+                    print("  \(decile * 10)%")
+                }
+            case .reusingVerifiedCopy(let path):
+                print("A copy is already at \(path); comparing it with the original.")
+            case .verified(let sha256):
+                print("Verified. SHA-256 \(sha256)")
+            case .removingInternalCopy:
+                print("Removing the internal copy.")
+            case .retryingRemoval:
+                print("macOS kept the internal copy; rescanning and removing it again.")
+            case .reclaimed:
+                print("The internal copy is gone.")
+            case .restartingCoreSimulator:
+                print("Restarting the CoreSimulator service so it forgets the old location.")
+            case .attaching:
+                print("Attaching the copy on the volume.")
+            case .done(let name):
+                print("Done. \(name) is now served from the external volume.")
+            }
+        })
+
+    do {
+        let plan = try offloader.plan(runtime: runtime, volumeUUID: volumeUUID)
+        print("Runtime:  build \(plan.image.build), version \(plan.image.version), \(formatSize(plan.image.sizeBytes)), \(plan.image.kind)")
+        print("Volume:   \"\(plan.volume.name)\" (\(plan.volume.uuid))")
+        print("Copy to:  \(plan.destination)")
+        if dryRun {
+            print("")
+            print("Dry run: would copy and verify the image, remove the internal copy, restart the")
+            print("CoreSimulator service and attach the copy. Nothing was changed.")
+            return 0
+        }
+        print("")
+        try offloader.run(plan)
+        return 0
+    } catch {
+        printError("offload: \(error)")
+        return 1
+    }
+}
+
+func runEject(arguments: [String]) -> Int32 {
+    var forceUnmount = false
+    var dryRun = false
+    for argument in arguments {
+        switch argument {
+        case "--force-unmount": forceUnmount = true
+        case "--dry-run": dryRun = true
+        default:
+            printError("eject: unknown option \(argument)")
+            return 64
+        }
+    }
+    let paths = Paths(home: NSHomeDirectory(), userID: getuid())
+    let simulators = Simulators()
+    let volumes = Volumes()
+    do {
+        let manifest = try ManifestStore(paths: paths).load()
+        if manifest.runtimes.isEmpty {
+            print("Nothing is offloaded; nothing to eject.")
+            return 0
+        }
+        if dryRun {
+            let fileSystem = FileSystem()
+            for runtime in manifest.runtimes {
+                let mounted = fileSystem.isMountPoint(paths.mountPoint(forBuild: runtime.build))
+                print("Would unregister \(runtime.build)\(mounted ? " and eject its image" : " (not attached)").")
+            }
+            for uuid in Set(manifest.runtimes.map(\.volumeUUID)) {
+                if let volume = volumes.volume(uuid: uuid) {
+                    print("Would eject the disk holding \"\(volume.name)\".")
+                }
+            }
+            print("")
+            print("Dry run: nothing was changed.")
+            return 0
+        }
+        try Ejector(
+            paths: paths,
+            simulators: simulators,
+            attacher: Attacher(),
+            services: Services(userID: paths.userID),
+            volumeLookup: volumes.volume(uuid:),
+            ejectVolume: volumes.eject(uuid:),
+            report: { event in
+                switch event {
+                case .unregistering(let build): print("Unregistering \(build).")
+                case .ejected(let build, let attempts):
+                    print("Ejected \(build)\(attempts > 1 ? " (attempt \(attempts))" : "").")
+                case .forcing(let build): print("Forcing the unmount of \(build), as requested.")
+                case .ejectedVolume(let name): print("Ejected the disk holding \"\(name)\".")
+                }
+            }
+        ).run(manifest: manifest, forceUnmount: forceUnmount)
+        print("")
+        print("Safe to unplug. Plugging the disk back in re-attaches the runtimes.")
+        return 0
+    } catch {
+        printError("eject: \(error)")
+        return 1
+    }
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
+case "offload":
+    exit(runOffload(arguments: Array(arguments.dropFirst())))
+case "eject":
+    exit(runEject(arguments: Array(arguments.dropFirst())))
 case "setup":
     exit(runSetup(arguments: Array(arguments.dropFirst())))
 case "sync":

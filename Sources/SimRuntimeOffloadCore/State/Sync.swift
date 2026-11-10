@@ -71,8 +71,8 @@ public struct Sync {
         registeredRuntimes: () throws -> [Runtime]
     ) throws -> [SyncOutcome] {
         guard !manifest.runtimes.isEmpty else { return [] }
-        let lock = try acquireLock()
-        defer { close(lock) }
+        let lock = try StateLock.acquire(paths: paths)
+        defer { lock.release() }
 
         var cached: [Runtime]?
         func runtimes() throws -> [Runtime] {
@@ -136,6 +136,10 @@ public struct Sync {
             try registry.link(build: runtime.build, to: registry.bundle(inImageMountedAt: mountPoint))
             return .linked
 
+        case .staged:
+            return .needsAttention(
+                "copied to the volume, but its internal copy is still installed; finish with `simruntime-offload offload \(runtime.build)`")
+
         case .notRegistered:
             return .needsAttention(
                 "attached and linked, but CoreSimulator does not list it yet; it may need the CoreSimulator service restarted or a new login")
@@ -159,19 +163,5 @@ public struct Sync {
                 atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         }
         try files.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
-    }
-
-    /// launchd starts the agent for every mount, including the ones a sync
-    /// makes itself, so overlapping runs are expected. An advisory lock makes
-    /// the later one give way; the kernel releases it if the holder dies.
-    private func acquireLock() throws -> Int32 {
-        try files.createDirectory(atPath: paths.stateDirectory, withIntermediateDirectories: true)
-        let descriptor = open("\(paths.stateDirectory)/sync.flock", O_CREAT | O_RDWR, 0o600)
-        guard descriptor >= 0 else { throw SyncError.alreadyRunning }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            close(descriptor)
-            throw SyncError.alreadyRunning
-        }
-        return descriptor
     }
 }

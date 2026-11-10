@@ -27,6 +27,9 @@ public protocol ImageAttaching {
     func attach(image: String, at mountPoint: String) throws
     /// Ejects whatever is mounted at `mountPoint`. Never forces.
     func eject(mountPoint: String) throws
+    /// Unmounts `mountPoint` even though something has it open, then ejects the
+    /// image. Only ever called because the user asked for exactly this.
+    func forceEject(mountPoint: String) throws
 }
 
 /// Uses `diskutil image attach`, the kernel-backed disk-image stack.
@@ -60,6 +63,39 @@ public struct Attacher: ImageAttaching {
         guard result.succeeded else {
             throw AttachError.busy(mountPoint: mountPoint, message: Attacher.message(from: result))
         }
+    }
+
+    public func forceEject(mountPoint: String) throws {
+        // Find the image's device before the mount, and with it the route to
+        // the device, disappears.
+        let device = wholeDisk(forMountPoint: mountPoint)
+        let result = try runner.run("/usr/sbin/diskutil", ["unmount", "force", mountPoint])
+        guard result.succeeded else {
+            throw AttachError.busy(mountPoint: mountPoint, message: Attacher.message(from: result))
+        }
+        if let device {
+            _ = try? runner.run("/usr/sbin/diskutil", ["eject", device])
+        }
+    }
+
+    /// The disk-image device behind an APFS volume mounted at `mountPoint`,
+    /// for example `disk10` for a volume on `disk11s1`.
+    func wholeDisk(forMountPoint mountPoint: String) -> String? {
+        guard let result = try? runner.run("/usr/sbin/diskutil", ["info", "-plist", mountPoint]),
+              result.succeeded
+        else { return nil }
+        return Attacher.parseWholeDisk(result.standardOutput)
+    }
+
+    static func parseWholeDisk(_ data: Data) -> String? {
+        guard
+            let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+            let dictionary = plist as? [String: Any],
+            let stores = dictionary["APFSPhysicalStores"] as? [[String: Any]],
+            let store = stores.first?["APFSPhysicalStore"] as? String,
+            let slice = store.range(of: #"s\d+$"#, options: .regularExpression)
+        else { return nil }
+        return String(store[..<slice.lowerBound])
     }
 
     private static func message(from result: ProcessResult) -> String {

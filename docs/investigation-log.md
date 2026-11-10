@@ -460,3 +460,82 @@ program. The attach did not visibly wait.
 
 Decision: `setup` prints the commands for the one privileged step instead of
 running `sudo`, so that no code path in the tool ever asks for a password.
+
+---
+
+## Session 13 — 2026-11-10 — native tool, build step 5
+
+Built, with 129 tests passing: `offload` and `eject`, the verified image copy
+(`ImageStore`), the service restarts (`Services`), a forced unmount that only
+`--force-unmount` reaches, and a lock shared by `sync` and `eject`.
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H47 | The native `offload` can move a runtime the harness never touched, leaving no internal bytes. | **Confirmed** on iOS 27.1 (24A94425): 54 s, internal store empty, checksum matches, runtime served from the volume, device boots. (V, one run) |
+| H48 | The delete will need the `scan-and-mount` retry. | **Not needed** this time; the first delete reclaimed the asset. The retry stays, tested by unit tests only. |
+| H49 | The agent can start a sync while `offload` or `eject` is working. | **Confirmed** for `offload`: launchd started the agent on the attach that `offload` itself made, and the lock turned it away. (V) |
+| H50 | "Data Migration Failed" on the first boot of an iOS 27.1 device is caused by serving the runtime from the volume. | **Open.** No control exists until the runtime is restored internally. (H) |
+
+Full write-up: `docs/results/2026-11-10/native-offload.md`.
+
+Defects found and fixed in this session, none of which reached the machine:
+
+1. `eject` did not hold the sync lock, so an agent run started by an unrelated
+   mount could have re-attached a runtime between its release and the volume's
+   eject. Found by re-reading the flow, not by a failure.
+2. `offload` would have failed with "another sync is running" if the agent
+   held the lock at the moment of its own sync, which is after the internal
+   copy has been deleted. It now waits, and its final check decides the
+   outcome whoever did the attaching.
+3. `setup` followed the harness's list whenever it differed from the manifest,
+   which after a native offload means forgetting a runtime, and `doctor`
+   recommended it. Found by reading `doctor`'s output after the real run. The
+   manifest is now authoritative once it exists.
+4. The agent installed at step 4 ignored the new `staged` marker. Replaced
+   with the step 5 build before the real run.
+
+Decisions:
+
+- `offload` refuses while any simulator is booted, instead of skipping the
+  service restart as the design said. A runtime that is deleted but not yet
+  forgotten by the service is the stale-registration hazard; leaving the user
+  in it deliberately is worse than asking them to shut a simulator down.
+- The harness is no longer kept able to manage the machine. It still restores
+  (by `simctl runtime add` from the volume) until `restore` exists.
+- The real `eject` was held back until the project owner was at the machine,
+  because only she can plug the disk back in. Run then; see below.
+
+Mistake: my first two attempts to create a test device assumed a device type
+name and then a device type the runtime does not support. No effect beyond
+two failed `simctl create` calls, but the second should have been preceded by
+reading `supportedDeviceTypes`, which is what settled it.
+
+The native `eject`, run for real twice straight after shutting a simulator
+down:
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H51 | The native `eject` releases every runtime and the disk without force. | **Confirmed** twice, 23 s each, first attempt for every runtime. (V) |
+| H52 | `diskutil eject <volume UUID>` releases the physical disk. | **Refuted.** It unmounts that volume only. The tool now ejects the physical disk behind the volume. (V) |
+| H53 | After `diskutil eject <disk>` the disk leaves `diskutil list`. | **Refuted on this enclosure**: reported ejected, still listed, remountable in software. Cause not investigated. (V / H) |
+| H54 | Remounting the volume restores the runtimes with no other action. | **Confirmed**: all three attached and linked 5 s after `diskutil mount`. (V, one run) |
+
+Defect 5, found by the first real eject: the tool printed "Safe to unplug"
+after unmounting only its own volume. Harmless on a one-volume disk, wrong on
+any other. The harness had the same flaw all along; it went unnoticed because
+the test disk has one volume and nobody looked at `diskutil list` afterwards.
+Tests now: 133.
+
+"Data Migration Failed" (H50) appeared again on the second boot of the same
+device, so it is not a first-boot effect. Still unattributed.
+
+After the project owner unplugged and replugged the disk:
+
+| # | Hypothesis | Outcome |
+|---|---|---|
+| H55 | A physical replug after the native `eject` restores the runtimes with no other action. | **Confirmed**: all three attached and linked in the same second; Device Hub shows them available; the volume verifies and all three images match their checksums. (V, one run) |
+
+State left on the machine: three runtimes served from the volume (27.0, 27.1,
+27.2), no runtime on the internal disk, the step 5 agent loaded, and one more
+throwaway device, `sro-native-271`, shut down. The iOS 27.1 runtime is disposable and is kept as the subject for
+testing `restore`.

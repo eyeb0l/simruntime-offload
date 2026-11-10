@@ -12,6 +12,8 @@ public enum OffloadState: String, Equatable, Codable, Sendable {
     case notLinked
     /// Attached and linked, but CoreSimulator does not list the runtime.
     case notRegistered
+    /// Copied to the volume, but the internal copy has not been removed yet.
+    case staged
 }
 
 public struct OffloadedRuntimeStatus: Equatable, Sendable {
@@ -74,6 +76,7 @@ public struct InventoryBuilder {
                 runtime: runtime, volume: volume, state: state, registeredName: registered?.name)
         }
 
+        if runtime.isStaged { return result(.staged) }
         guard let volumeRoot = volume?.mountPoint else { return result(.volumeAbsent) }
         guard fileSystem.fileExists("\(volumeRoot)/\(runtime.imagePath)") else { return result(.imageMissing) }
         guard fileSystem.isMountPoint(mountPoint) else { return result(.notAttached) }

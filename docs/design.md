@@ -68,17 +68,21 @@ Sources/SimRuntimeOffloadCore/        everything testable; no user-facing text
               Volumes                 resolve a volume UUID (`diskutil info -plist`)
               Attacher                attach and eject images (`diskutil image …`)
               FileSystem              mount points and link targets
+              Services                restart SimLaunchHost and the per-user CoreSimulator service
+              ImageStore              copy an image, checksum both copies, verify it
+              Agent                   the LaunchAgent and its installed program
   State/      Manifest                what is offloaded, as JSON, on the internal disk
               Registry                the runtime links
               Inventory               the state of each offloaded runtime
               Sync                    the reconcile step shared by the agent and the CLI
+              StateLock               the lock that keeps sync and eject from overlapping
+              Adoption                first-time import of the experiment harness's state
+              Offload                 the `offload` flow
+              Eject                   the `eject` flow
   Support/    ProcessRunner, Version
 Sources/simruntime-offload/           argument parsing and user-facing text only
 Tests/SimRuntimeOffloadCoreTests/     unit tests, recorded fixtures, one integration test
 ```
-
-Still to come: `Services` (restarting SimLaunchHost and the per-user
-CoreSimulator service), `ImageStore` (copy, checksum, verify) and `Agent`.
 
 **Why Swift.** A single self-contained binary
 with its own code identity, which the consent model requires (hazard 7); no
@@ -131,7 +135,9 @@ before the next begins, and each of which can be undone until the one marked
 
 ### 5.2 `offload <runtime>`
 
-1. Preflight. Resolve the runtime; refuse if any simulator using it is booted.
+1. Preflight. Resolve the runtime; refuse if any simulator at all is booted
+   (as built: step 8 restarts a service every simulator depends on, so one
+   booted from another runtime would be killed too).
 2. Check free space on the volume (image size plus headroom).
 3. Copy the image to `<file>.partial` without extended attributes.
 4. SHA-256 the source and the copy; compare. Verify the image's own checksum.
@@ -143,12 +149,21 @@ before the next begins, and each of which can be undone until the one marked
    and 10). If it is
    still present, stop and report: the runtime remains usable from its internal
    copy and nothing else is changed.
-8. If no simulator is booted, restart the per-user CoreSimulator service (hazard 1).
-   If one is booted, skip, and tell the user the offloaded runtime will appear
-   after they next log in or restart that service.
+8. Restart the per-user CoreSimulator service (hazard 1). Step 1 guarantees
+   that no simulator is booted.
 9. `Sync` (5.4). Mark the manifest entry *active*.
 10. Verify: the build is listed by `simctl list runtimes` from the offload
     mount. If not, report it; the image is safe on the volume either way.
+
+As built, "measure" in step 7 means three checks, all of which must hold: the
+build is no longer in `simctl runtime list`, the path it was registered at no
+longer exists, and both of the daemon's inboxes are empty. Running `offload`
+again after a failure resumes: a destination file is reused only if its
+SHA-256 matches the internal image's, and is otherwise left alone and reported.
+
+A *staged* entry is one whose copy is verified but whose internal copy has not
+been confirmed gone. `Sync` never attaches a staged entry, because the same
+build is still registered from the internal disk.
 
 ### 5.3 `restore <runtime>`
 
@@ -188,11 +203,20 @@ Serialised by a lock. One runtime failing does not stop the others.
    it; restart `SimLaunchHost` (hazard 3); eject, retrying for ten seconds (hazard 5).
 3. If a volume is still held: identify the holder where possible and stop,
    unless `--force-unmount` was given, in which case force it (hazard 4).
-4. Eject the external volume. Print "safe to unplug" only if every step
-   succeeded.
+4. Eject the physical disk holding the volume, which unmounts every volume on
+   it (as built: ejecting only the tool's own volume left the disk attached,
+   and would have left any other volume on it mounted). Print "safe to unplug"
+   only if every step succeeded.
 
 This differs from the harness, whose `eject` forces automatically. A released
 tool should make the user ask for force.
+
+`eject` holds the state lock from before the first link is removed until the
+volume is gone. The agent runs on every mount event, and without the lock an
+unrelated disk mounting at that moment would have it re-attach a runtime that
+had just been released. As built, step 3 does not identify the holder: finding
+one reliably needs root (`lsof` as the user cannot see `spindump`), so the
+message says what to try instead.
 
 ### 5.6 `uninstall`
 
@@ -299,17 +323,25 @@ In priority order. The first three affect the design.
 
 ## 11. Build plan
 
-Progress: steps 1–4 are built and tested. `doctor`, `list`, `setup` and `sync`
-exist, and on the development machine the native agent has replaced the
-harness's. Offloading, restoring and ejecting are still done with the harness,
-whose state `setup` adopts and which can still manage everything the native
-tool has set up.
+Progress: steps 1–5 are built and tested. `doctor`, `list`, `setup`, `sync`,
+`offload` and `eject` exist. On the development machine the native agent has
+replaced the harness's, and a third runtime was offloaded with the native tool
+alone and all three were then released with the native `eject`. Restoring and
+uninstalling are still to come.
 
 Differences from this plan so far:
 - `setup` does not run `sudo` itself. It prints the two commands that create
   the shared link directory and asks the user to run them. Nothing in the tool
   ever asks for a password.
-- `setup` does not yet choose a volume; that arrives with `offload`.
+- `setup` does not choose a volume. `offload --volume <UUID>` does, and later
+  offloads default to the volume already in use when there is exactly one.
+- The harness can no longer manage everything. Its list is adopted once, when
+  there is no manifest; after that the manifest is authoritative, and a runtime
+  offloaded natively is unknown to the harness. The earlier rule (follow the
+  harness whenever the two differ) would have made `setup` forget such a
+  runtime, and `doctor` recommended exactly that until this step's test showed it.
+- `offload` refuses while any simulator is booted, rather than skipping the
+  service restart.
 
 1. Package skeleton, `Support`, `Preflight`, `doctor`. Unit tests.
 2. `Simulators`, `Volume`, `Manifest`, `list`. Unit tests with fixtures.

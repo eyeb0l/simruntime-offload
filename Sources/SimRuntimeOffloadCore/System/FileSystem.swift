@@ -8,6 +8,8 @@ public protocol FileSystemProbing {
     func isMountPoint(_ path: String) -> Bool
     /// Where the symbolic link at `path` points, or `nil` if it is not a link.
     func symbolicLinkDestination(_ path: String) -> String?
+    /// The names in a directory; empty if it cannot be listed.
+    func contentsOfDirectory(_ path: String) -> [String]
 }
 
 public struct FileSystem: FileSystemProbing {
@@ -39,5 +41,9 @@ public struct FileSystem: FileSystemProbing {
 
     public func symbolicLinkDestination(_ path: String) -> String? {
         try? FileManager.default.destinationOfSymbolicLink(atPath: path)
+    }
+
+    public func contentsOfDirectory(_ path: String) -> [String] {
+        (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
     }
 }

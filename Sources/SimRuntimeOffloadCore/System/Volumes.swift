@@ -31,6 +31,41 @@ public struct Volumes {
         return Volumes.parse(result.standardOutput)
     }
 
+    /// Ejects the physical disk holding the volume, which unmounts every
+    /// volume on it. Returns the tool's message on failure.
+    ///
+    /// The whole device, not the one volume: `diskutil eject <volume>` only
+    /// unmounts that volume, and "safe to unplug" has to be true of the cable.
+    /// If another volume on the disk is busy the eject fails, and that is the
+    /// right answer.
+    public func eject(uuid: String) -> String? {
+        guard
+            let info = try? runner.run("/usr/sbin/diskutil", ["info", "-plist", uuid]),
+            info.succeeded
+        else { return "the volume is no longer attached" }
+        guard let volume = Volumes.parse(info.standardOutput), !volume.isInternal else {
+            return "refusing to eject an internal disk"
+        }
+        let target = Volumes.physicalDisk(info.standardOutput) ?? uuid
+        guard let result = try? runner.run("/usr/sbin/diskutil", ["eject", target]) else {
+            return "could not run diskutil"
+        }
+        if result.succeeded { return nil }
+        let text = result.errorText.isEmpty ? result.outputText : result.errorText
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The whole physical disk behind a volume: for APFS, the disk its
+    /// container's physical store is a slice of; otherwise the parent disk.
+    static func physicalDisk(_ data: Data) -> String? {
+        if let disk = Attacher.parseWholeDisk(data) { return disk }
+        guard
+            let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+            let dictionary = plist as? [String: Any]
+        else { return nil }
+        return dictionary["ParentWholeDisk"] as? String
+    }
+
     static func parse(_ data: Data) -> Volume? {
         guard
             let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
