@@ -19,7 +19,7 @@ jobs:
     name: Sign, notarise and publish
     runs-on: xcode-27
     environment: release
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       # The team that must have signed the binary. Public: it is in every
@@ -93,7 +93,8 @@ jobs:
           echo "ARCHIVE=$RUNNER_TEMP/$name.zip" >> "$GITHUB_ENV"
 
       # A bare executable cannot have its ticket stapled; Gatekeeper looks the
-      # ticket up online the first time it runs.
+      # ticket up online the first time it runs. Usually minutes, but Apple can
+      # hold a team's first submissions for much longer.
       - name: Notarise
         env:
           API_KEY: ${{ secrets.NOTARY_API_KEY }}
@@ -103,14 +104,17 @@ jobs:
           key="$RUNNER_TEMP/notary.p8"
           printf '%s\n' "$API_KEY" > "$key"
           xcrun notarytool submit "$ARCHIVE" --key "$key" --key-id "$API_KEY_ID" \
-            --issuer "$API_ISSUER_ID" --wait --timeout 30m --output-format json \
+            --issuer "$API_ISSUER_ID" --wait --timeout 90m --output-format json \
             > "$RUNNER_TEMP/notary.json" || true
           cat "$RUNNER_TEMP/notary.json"
           status="$(plutil -extract status raw -o - "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
           if [ "$status" != "Accepted" ]; then
             id="$(plutil -extract id raw -o - "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
-            [ -n "$id" ] && xcrun notarytool log "$id" --key "$key" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID"
-            echo "::error::Notarisation status: ${status:-no result}"
+            # There is no log until Apple has finished, so this can fail.
+            if [ -n "$id" ]; then
+              xcrun notarytool log "$id" --key "$key" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID" || true
+            fi
+            echo "::error::Notarisation status: ${status:-no result (still in progress?)}. Submission ${id:-unknown}; re-run this job to submit again."
             exit 1
           fi
 
