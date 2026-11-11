@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 — 2026-11-11
 
 - Serialise mutating operations through one permanent lock, reload plans under
   it, and recheck simulator state before destructive steps and service restarts.
@@ -9,6 +9,8 @@
   state, but requires the current agent (`setup`) and prevents downgrading.
 - Verify reused disk images and keep new copies partial until both checks pass.
 - Require matching volume UUIDs and an explicit internal/external classification.
+- Preserve image-identifier selection when replanning and recovering, and avoid
+  unplug assurances when eject has nothing left to release.
 - Add `sync --dry-run`, bounded agent logs, command deadlines and periodic
   retries for mount notifications received during another operation.
 - Add regression coverage for transaction interleavings, recovery, volume

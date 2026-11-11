@@ -1,7 +1,7 @@
 import Foundation
 import SimRuntimeOffloadCore
 
-let toolVersion = "0.1.2"
+let toolVersion = "0.1.3"
 
 let usage = """
     simruntime-offload — serve Xcode Simulator runtimes from an external volume
