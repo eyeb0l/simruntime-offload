@@ -65,8 +65,9 @@ before trusting it.
   your account register runtimes that other accounts' simulators would load.
 - A login agent, running as you, that attaches the runtimes at login and when
   the volume mounts. macOS will ask once whether it may access a removable
-  volume. Because the tool is not signed with a Developer ID, macOS may ask
-  again after each rebuild or upgrade.
+  volume. Releases are signed with a Developer ID, so upgrading from one to
+  the next should not ask again (not yet tested). A build from source is not,
+  and macOS may ask again after each rebuild.
 - Nothing else. No SIP changes, no daemon, no helper running as root, no
   kernel or system extension, nothing written to any directory Apple protects.
 
@@ -95,6 +96,18 @@ an internal one (first boot 38–41 s against 35–39 s on the test machine).
 
 Requires Xcode 27.2 and its command-line tools. There are no other
 dependencies.
+
+From a release, for Apple silicon: download the `.zip` and its `.sha256` from
+the repository's Releases. The program is signed with a Developer ID and
+notarised by Apple.
+
+```
+shasum -a 256 -c simruntime-offload-<version>-macos-arm64.zip.sha256
+unzip simruntime-offload-<version>-macos-arm64.zip
+sudo cp simruntime-offload-<version>-macos-arm64/simruntime-offload /usr/local/bin/
+```
+
+From source:
 
 ```
 git clone <this repository>
