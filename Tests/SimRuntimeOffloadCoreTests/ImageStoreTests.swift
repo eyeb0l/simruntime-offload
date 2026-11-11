@@ -31,10 +31,9 @@ final class ImageStoreTests: ScratchTestCase {
         try files.createDirectory(atPath: folder, withIntermediateDirectories: true)
         files.createFile(atPath: "\(folder)/file", contents: Data("hello".utf8))
         let source = "\(root!)/source.dmg"
-        let made = try SystemProcessRunner().run("/usr/bin/hdiutil", [
-            "create", "-quiet", "-srcfolder", folder, "-fs", "APFS", "-format", "UDZO", source,
-        ])
-        try XCTSkipUnless(made.succeeded, "could not create a test image")
+        if let failure = try makeTestImage(of: folder, at: source) {
+            throw XCTSkip("could not create a test image: \(failure)")
+        }
         // An extended attribute on the original must not follow the copy.
         _ = try SystemProcessRunner().run("/usr/bin/xattr", ["-w", "com.apple.quarantine", "0081;test", source])
 
