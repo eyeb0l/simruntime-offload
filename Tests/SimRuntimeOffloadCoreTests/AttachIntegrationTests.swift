@@ -18,11 +18,9 @@ final class AttachIntegrationTests: ScratchTestCase {
         try files.createDirectory(
             atPath: "\(source)/\(Paths.bundleSubpath)/Test 1.0.simruntime", withIntermediateDirectories: true)
         try files.createDirectory(atPath: "\(root!)/volume/SimRuntimes/TEST", withIntermediateDirectories: true)
-        let result = try SystemProcessRunner().run("/usr/bin/hdiutil", [
-            "create", "-quiet", "-srcfolder", source, "-fs", "APFS", "-format", "UDZO",
-            "-volname", "sro-test", image,
-        ])
-        try XCTSkipUnless(result.succeeded, "could not create a test image: \(result.errorText)")
+        if let failure = try makeTestImage(of: source, at: image, volumeName: "sro-test") {
+            throw XCTSkip("could not create a test image: \(failure)")
+        }
         try files.createDirectory(atPath: sharedLinks, withIntermediateDirectories: true)
     }
 
