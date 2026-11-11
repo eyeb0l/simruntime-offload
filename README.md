@@ -19,7 +19,7 @@ Served from an external volume
 
 ## Read this first
 
-This is version 0.1.2 of a tool that depends on behaviour Apple does not
+This is version 0.1.3 of a tool that depends on behaviour Apple does not
 document. It was developed and tested on **one Mac**. Know what that means
 before trusting it.
 
