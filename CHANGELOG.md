@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — 2026-11-11
 
 - Releases are published as a signed and notarised archive for Apple
   silicon. The program carries a Developer ID signature, so upgrading from
   one release to the next should not ask again for access to the volume.
   Builds from source are still ad-hoc signed.
+- `SRO_SKIP_INTEGRATION=1 swift test` skips the tests that attach a disk image
+  instead of crashing the test run.
 
 ## 0.1.1 — 2026-11-10
 
