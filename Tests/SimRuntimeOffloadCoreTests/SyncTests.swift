@@ -83,16 +83,17 @@ final class SyncTests: ScratchTestCase {
     }
 
     private func sync(runtimes: [Runtime] = []) throws -> [SyncOutcome] {
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
         let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
         return try Sync(
             paths: paths, attacher: attacher, fileSystem: attacher,
             volumeLookup: { [volumeConnected] _ in volumeConnected ? volume : nil }
-        ).run(manifest: Manifest(runtimes: [entry]), registeredRuntimes: { runtimes })
+        ).run(registeredRuntimes: { runtimes })
     }
 
     func testAnEmptyManifestDoesNothing() throws {
         let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in nil })
-            .run(manifest: Manifest(), registeredRuntimes: { [] })
+            .run(registeredRuntimes: { [] })
         XCTAssertEqual(outcomes, [])
         XCTAssertFalse(files.fileExists(atPath: paths.stateDirectory), "nothing should be created")
     }
@@ -110,19 +111,21 @@ final class SyncTests: ScratchTestCase {
     }
 
     func testDoesNotConsultCoreSimulatorWhenNothingIsAttachedYet() throws {
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
         let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
         var asked = 0
         let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
-            .run(manifest: Manifest(runtimes: [entry]), registeredRuntimes: { asked += 1; return [] })
+            .run(registeredRuntimes: { asked += 1; return [] })
         XCTAssertEqual(outcomes.map(\.result), [.attached])
         XCTAssertEqual(asked, 0, "at login the agent should attach without waiting for simctl")
     }
 
     func testAFailureToAskCoreSimulatorIsReportedForThatRuntime() throws {
         _ = try sync()
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
         let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
         let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
-            .run(manifest: Manifest(runtimes: [entry]), registeredRuntimes: {
+            .run(registeredRuntimes: {
                 throw SimulatorsError.unreadableOutput(command: "xcrun simctl list runtimes -j")
             })
         guard case .failed(let message)? = outcomes.first?.result else { return XCTFail("expected failed") }
@@ -207,7 +210,7 @@ final class SyncTests: ScratchTestCase {
 
     func testGivesWayToASyncThatIsAlreadyRunning() throws {
         try files.createDirectory(atPath: paths.stateDirectory, withIntermediateDirectories: true)
-        let held = open("\(paths.stateDirectory)/sync.flock", O_CREAT | O_RDWR, 0o600)
+        let held = open(paths.lockFile, O_CREAT | O_RDWR, 0o600)
         XCTAssertEqual(flock(held, LOCK_EX | LOCK_NB), 0)
         defer { close(held) }
         XCTAssertThrowsError(try sync()) { error in
@@ -217,11 +220,62 @@ final class SyncTests: ScratchTestCase {
 
     func testOneRuntimeFailingDoesNotStopTheOthers() throws {
         let missing = OffloadedRuntime(build: "24B8117", volumeUUID: "unknown", imagePath: "nope.dmg")
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
         let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [missing, entry]))
         let outcomes = try Sync(
             paths: paths, attacher: attacher, fileSystem: attacher,
             volumeLookup: { $0 == self.uuid ? volume : nil }
-        ).run(manifest: Manifest(runtimes: [missing, entry]), registeredRuntimes: { [] })
+        ).run(registeredRuntimes: { [] })
         XCTAssertEqual(outcomes.map(\.result), [.waitingForVolume, .attached])
     }
+
+    func testDryRunReportsAttachmentWithoutCreatingMountsLinksOrLockFiles() throws {
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
+        let before = try Data(contentsOf: URL(fileURLWithPath: paths.manifest))
+        let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
+        let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
+            .run(dryRun: true, registeredRuntimes: { [] })
+        XCTAssertEqual(outcomes.map(\.result), [.wouldAttach])
+        XCTAssertTrue(attacher.attached.isEmpty)
+        XCTAssertFalse(files.fileExists(atPath: paths.mountRoot))
+        XCTAssertNil(try? files.destinationOfSymbolicLink(atPath: link))
+        XCTAssertFalse(files.fileExists(atPath: paths.lockFile))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths.manifest)), before)
+    }
+
+    func testDryRunLeavesDanglingLinksUntouched() throws {
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
+        try files.createSymbolicLink(atPath: link, withDestinationPath: "/gone/runtime.simruntime")
+        let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in nil })
+            .run(dryRun: true, registeredRuntimes: { [] })
+        XCTAssertEqual(outcomes.map(\.result), [.wouldRemoveDanglingLink])
+        XCTAssertEqual(try files.destinationOfSymbolicLink(atPath: link), "/gone/runtime.simruntime")
+        XCTAssertFalse(files.fileExists(atPath: paths.lockFile))
+    }
+
+    func testDryRunDoesNotLinkAnAlreadyAttachedImage() throws {
+        _ = try sync()
+        try files.removeItem(atPath: link)
+        let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
+        let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
+            .run(dryRun: true, registeredRuntimes: { [] })
+        XCTAssertEqual(outcomes.map(\.result), [.wouldLink])
+        XCTAssertNil(try? files.destinationOfSymbolicLink(atPath: link))
+        XCTAssertEqual(attacher.attached.count, 1)
+    }
+
+    func testSharedTransactionReadsTheCurrentManifestRatherThanAnEarlierSnapshot() throws {
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [entry]))
+        let volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: nil)
+        let sync = Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in volume })
+        let lock = try StateLock.acquire(paths: paths)
+        defer { lock.release() }
+        // A restore within this transaction removed the entry after this
+        // agent object was constructed. It must not be attached again.
+        try ManifestStore(paths: paths).save(Manifest())
+        XCTAssertEqual(try sync.run(holding: lock, registeredRuntimes: { [] }), [])
+        XCTAssertTrue(attacher.attached.isEmpty)
+    }
+
 }

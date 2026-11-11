@@ -77,4 +77,31 @@ final class ImageStoreTests: ScratchTestCase {
         XCTAssertThrowsError(try ImageStore().copyVerified(from: source, to: destination) { _, _ in })
         XCTAssertFalse(files.fileExists(atPath: destination + ".partial"))
     }
+
+    func testFailedOrInterruptedVerificationNeverPublishesAFinalImage() throws {
+        struct ThrowingRunner: ProcessRunning {
+            func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
+                throw ProcessRunError.timedOut(executable: executable, seconds: 300)
+            }
+        }
+        let source = "\(root!)/source.dmg"
+        let destination = "\(root!)/volume/dest.dmg"
+        try Data("arbitrary bytes".utf8).write(to: URL(fileURLWithPath: source))
+        XCTAssertThrowsError(try ImageStore(runner: ThrowingRunner()).copyVerified(from: source, to: destination) { _, _ in })
+        XCTAssertFalse(files.fileExists(atPath: destination))
+        XCTAssertFalse(files.fileExists(atPath: destination + ".partial"))
+        XCTAssertTrue(files.fileExists(atPath: source))
+    }
+
+    func testVerifyingAnExistingInvalidImageLeavesItUntouched() throws {
+        let path = "\(root!)/existing.dmg"
+        let data = Data("not an image".utf8)
+        try data.write(to: URL(fileURLWithPath: path))
+        let runner = RecordingRunner()
+        runner.result = ProcessResult(status: 1, standardError: Data("invalid".utf8))
+        XCTAssertThrowsError(try ImageStore(runner: runner).verifyImage(at: path))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), data)
+        XCTAssertEqual(runner.invocations, [["/usr/bin/hdiutil", "verify", "-quiet", path]])
+    }
+
 }

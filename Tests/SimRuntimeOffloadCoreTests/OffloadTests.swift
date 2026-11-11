@@ -14,8 +14,10 @@ final class FakeSimulators: SimulatorControlling {
     var onScan: (FakeSimulators) -> Void = { _ in }
 
     func images() throws -> [RuntimeImage] { imageList }
-    func runtimes() throws -> [Runtime] { runtimeList }
-    func devices() throws -> [Device] { deviceList }
+    var runtimeProvider: (() throws -> [Runtime])?
+    func runtimes() throws -> [Runtime] { try runtimeProvider?() ?? runtimeList }
+    var onDevices: (() -> Void)?
+    func devices() throws -> [Device] { onDevices?(); return deviceList }
     func deleteImage(identifier: String) throws {
         deleted.append(identifier)
         onDelete(self, identifier)
@@ -39,8 +41,9 @@ final class FakeSimulators: SimulatorControlling {
 final class FakeServices: ServiceControlling {
     private(set) var launchHostRestarts = 0
     private(set) var serviceRestarts = 0
+    var onServiceRestart: () -> Void = {}
     func restartLaunchHost() { launchHostRestarts += 1 }
-    func restartCoreSimulatorService() { serviceRestarts += 1 }
+    func restartCoreSimulatorService() { serviceRestarts += 1; onServiceRestart() }
 }
 
 /// Copies for real (the files are tiny) but takes the checksum from a table,
@@ -48,6 +51,14 @@ final class FakeServices: ServiceControlling {
 final class FakeImageStore: ImageStoring {
     var checksums: [String: String] = [:]
     var copyError: Error?
+    var verificationError: Error?
+    var onHash: (String) -> Void = { _ in }
+    var onVerifiedCopy: () -> Void = {}
+    private(set) var verifiedImages: [String] = []
+    func verifyImage(at path: String) throws {
+        verifiedImages.append(path)
+        if let verificationError { throw verificationError }
+    }
     private(set) var copies: [(String, String)] = []
 
     func copyVerified(from source: String, to destination: String, progress: (Int64, Int64) -> Void) throws -> String {
@@ -57,10 +68,11 @@ final class FakeImageStore: ImageStoring {
         try FileManager.default.copyItem(atPath: source, toPath: destination)
         copies.append((source, destination))
         progress(10, 10)
+        onVerifiedCopy()
         return checksums[source] ?? "same"
     }
 
-    func sha256(ofFile path: String) throws -> String { checksums[path] ?? "same" }
+    func sha256(ofFile path: String) throws -> String { onHash(path); return checksums[path] ?? "same" }
 
     private(set) var removed: [String] = []
     func removeImage(at path: String) throws {
@@ -91,6 +103,8 @@ final class OffloadTests: ScratchTestCase {
     private var inbox: [String] = []
     private var events: [OffloadEvent] = []
     private var syncs = 0
+    private var onEvent: (OffloadEvent) -> Void = { _ in }
+    private var onVolumeLookup: () -> Void = {}
     private var volume: Volume!
 
     private var assetData: String { "\(root!)/internal/abc.asset/AssetData" }
@@ -118,7 +132,6 @@ final class OffloadTests: ScratchTestCase {
         inbox = []
         events = []
         syncs = 0
-        syncCollisions = 0
         volume = Volume(uuid: uuid, name: "External", mountPoint: volumeRoot, isInternal: false, freeBytes: 500_000_000_000)
 
         try files.createDirectory(atPath: "\(assetData)/Restore", withIntermediateDirectories: true)
@@ -133,13 +146,12 @@ final class OffloadTests: ScratchTestCase {
         }
     }
 
-    private var syncCollisions = 0
 
     private func offloader(servesAfterSync: Bool = true) -> Offloader {
         Offloader(
             paths: paths,
             simulators: simulators,
-            volumeLookup: { [unowned self] in $0 == self.uuid ? self.volume : nil },
+            volumeLookup: { [unowned self] in self.onVolumeLookup(); return $0 == self.uuid ? self.volume : nil },
             imageStore: imageStore,
             services: services,
             fileSystem: OverlayFileSystem(base: attacher, listings: { [unowned self] in
@@ -147,15 +159,11 @@ final class OffloadTests: ScratchTestCase {
             }),
             sync: { [unowned self] _ in
                 self.syncs += 1
-                if self.syncCollisions > 0 {
-                    self.syncCollisions -= 1
-                    throw SyncError.alreadyRunning
-                }
                 if servesAfterSync { self.simulators.runtimeList = [self.served] }
                 return []
             },
             pause: { _ in },
-            report: { [unowned self] in self.events.append($0) })
+            report: { [unowned self] in self.events.append($0); self.onEvent($0) })
     }
 
     private func savedEntry() throws -> OffloadedRuntime? {
@@ -375,12 +383,15 @@ final class OffloadTests: ScratchTestCase {
         XCTAssertFalse(try XCTUnwrap(try savedEntry()).isStaged)
     }
 
-    func testWaitsForTheAgentWhenItIsSyncingAtTheSameMoment() throws {
-        syncCollisions = 2
+    func testRefusesWhileAnotherOperationHoldsTheLock() throws {
         let offloader = offloader()
-        try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))
-        XCTAssertEqual(syncs, 3)
-        XCTAssertTrue(events.contains(.done(name: "iOS 27.0")))
+        let plan = try offloader.plan(runtime: "24A434", volumeUUID: uuid)
+        let lock = try StateLock.acquire(paths: paths)
+        defer { lock.release() }
+        XCTAssertThrowsError(try offloader.run(plan)) { XCTAssertEqual($0 as? SyncError, .alreadyRunning) }
+        XCTAssertTrue(simulators.deleted.isEmpty)
+        XCTAssertTrue(imageStore.copies.isEmpty)
+        XCTAssertNil(try savedEntry())
     }
 
     func testAStagedEntryIsNeverAttachedBySync() throws {
@@ -388,8 +399,189 @@ final class OffloadTests: ScratchTestCase {
             OffloadedRuntime(build: "24A434", volumeUUID: uuid, imagePath: "SimRuntimes/24A434/img.dmg", staged: true)
         ]))
         let outcomes = try Sync(paths: paths, attacher: attacher, fileSystem: attacher, volumeLookup: { _ in self.volume })
-            .run(manifest: try ManifestStore(paths: paths).load(), registeredRuntimes: { [] })
+            .run(registeredRuntimes: { [] })
         guard case .needsAttention? = outcomes.first?.result else { return XCTFail("expected needsAttention") }
         XCTAssertTrue(attacher.attached.isEmpty)
     }
+
+    func testOverlappingRestoreCannotDeleteTheVerifiedCopyBeforeInternalDeletion() throws {
+        var restoreWasBlocked = false
+        onEvent = { [unowned self] event in
+            guard event == .removingInternalCopy else { return }
+            let restorer = Restorer(
+                paths: self.paths, simulators: self.simulators, volumeLookup: { _ in self.volume },
+                imageStore: self.imageStore, attacher: self.attacher, services: self.services,
+                fileSystem: self.attacher, sync: { _ in [] }, pause: { _ in })
+            do {
+                let plan = try restorer.plan(runtime: "24A434")
+                try restorer.run(plan, deleteImage: true, forceUnmount: false)
+                XCTFail("an overlapping restore must not be allowed to delete the only verified copy")
+            } catch SyncError.alreadyRunning { restoreWasBlocked = true }
+            catch { XCTFail("unexpected error: \(error)") }
+        }
+        let offloader = offloader()
+        try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))
+        XCTAssertTrue(restoreWasBlocked)
+        XCTAssertFalse(files.fileExists(atPath: source))
+        XCTAssertTrue(files.fileExists(atPath: destination))
+        XCTAssertTrue(imageStore.removed.isEmpty)
+    }
+
+    func testASimulatorStartedDuringCopyStopsInternalDeletionAndServiceRestart() throws {
+        imageStore.onVerifiedCopy = { [unowned self] in self.startAnotherSimulator() }
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))) {
+            XCTAssertEqual($0 as? OffloadError, .simulatorsBooted(["Other simulator"]))
+        }
+        XCTAssertTrue(simulators.deleted.isEmpty)
+        XCTAssertEqual(services.serviceRestarts, 0)
+        XCTAssertTrue(files.fileExists(atPath: source))
+        XCTAssertTrue(files.fileExists(atPath: destination))
+    }
+
+    private func startAnotherSimulator(state: String = "Booted") {
+        simulators.deviceList = [Device(udid: "other", name: "Other simulator", state: state,
+                                       runtimeIdentifier: "another-runtime", isAvailable: true)]
+    }
+
+    func testABootingOrShuttingDownSimulatorIsAlsoRefused() {
+        for state in ["Booting", "Shutting Down", "Unknown"] {
+            startAnotherSimulator(state: state)
+            XCTAssertThrowsError(try offloader().plan(runtime: "24A434", volumeUUID: uuid))
+        }
+        XCTAssertTrue(simulators.deleted.isEmpty)
+    }
+
+    func testDisconnectedDestinationAfterCopyPreservesTheInternalCopy() throws {
+        imageStore.onVerifiedCopy = { [unowned self] in self.volume = nil }
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))) {
+            XCTAssertEqual($0 as? OffloadError, .volumeChanged(uuid: self.uuid))
+        }
+        XCTAssertTrue(files.fileExists(atPath: source))
+        XCTAssertTrue(simulators.deleted.isEmpty)
+    }
+
+    func testAReusedImageMustPassDiskImageVerificationBeforeDeletion() throws {
+        try files.createDirectory(atPath: (destination as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try files.copyItem(atPath: source, toPath: destination)
+        imageStore.verificationError = ImageStoreError.notADiskImage(path: destination, message: "bad image")
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid)))
+        XCTAssertEqual(imageStore.verifiedImages, [destination])
+        XCTAssertTrue(files.fileExists(atPath: source))
+        XCTAssertTrue(files.fileExists(atPath: destination), "an existing image is left alone on failure")
+        XCTAssertTrue(simulators.deleted.isEmpty)
+    }
+
+    private func interruptAfterInternalDeletion() throws {
+        onEvent = { [unowned self] event in
+            if event == .reclaimed { self.startAnotherSimulator() }
+        }
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))) {
+            XCTAssertEqual($0 as? OffloadError, .simulatorsBooted(["Other simulator"]))
+        }
+        onEvent = { _ in }
+        simulators.deviceList = []
+        let entry = try XCTUnwrap(try savedEntry())
+        XCTAssertTrue(entry.isStaged)
+        XCTAssertEqual(entry.offloadSource, image)
+        XCTAssertFalse(files.fileExists(atPath: source))
+        XCTAssertEqual(services.serviceRestarts, 0)
+    }
+
+    func testResumesAfterDeletionFromThePersistedJournalWithoutCopyingOrDeletingAgain() throws {
+        try interruptAfterInternalDeletion()
+        let offloader = offloader()
+        let plan = try offloader.plan(runtime: "24A434", volumeUUID: nil)
+        XCTAssertTrue(plan.isResuming)
+        try offloader.run(plan)
+        XCTAssertEqual(imageStore.copies.count, 1)
+        XCTAssertEqual(simulators.deleted.count, 1)
+        XCTAssertEqual(imageStore.verifiedImages, [destination])
+        let entry = try XCTUnwrap(try savedEntry())
+        XCTAssertFalse(entry.isStaged)
+        XCTAssertNil(entry.offloadSource)
+        XCTAssertTrue(events.contains(.done(name: "iOS 27.0")))
+    }
+
+    func testRecoveryRechecksItsSavedChecksumAndDoesNotActivateADamagedImage() throws {
+        try interruptAfterInternalDeletion()
+        imageStore.checksums[destination] = "damaged"
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: nil))) {
+            XCTAssertEqual($0 as? OffloadError, .destinationDiffers(path: self.destination))
+        }
+        XCTAssertTrue(try XCTUnwrap(try savedEntry()).isStaged)
+        XCTAssertEqual(services.serviceRestarts, 0)
+        XCTAssertEqual(syncs, 0)
+    }
+
+    func testRecoveryDoesNotActivateWhenARescanFindsAnInternalRegistration() throws {
+        try interruptAfterInternalDeletion()
+        simulators.onScan = { [unowned self] sim in sim.imageList = [self.image] }
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: nil))) {
+            XCTAssertEqual($0 as? OffloadError, .notReclaimed(build: "24A434"))
+        }
+        XCTAssertTrue(try XCTUnwrap(try savedEntry()).isStaged)
+        XCTAssertEqual(syncs, 0)
+    }
+
+    func testLegacyOrRestoreStagedEntriesWithoutAnOffloadJournalUseRestoreForRecovery() throws {
+        simulators.imageList = []
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [OffloadedRuntime(
+            build: "24A434", volumeUUID: uuid, imagePath: "SimRuntimes/24A434/img.dmg", sha256: "same", staged: true)]))
+        XCTAssertThrowsError(try offloader().plan(runtime: "24A434", volumeUUID: nil)) {
+            XCTAssertEqual($0 as? OffloadError, .cannotResume(build: "24A434"))
+        }
+        XCTAssertTrue(imageStore.copies.isEmpty)
+        XCTAssertTrue(simulators.deleted.isEmpty)
+    }
+
+    func testExecutionRejectsAPlanWhichAnotherOperationAlreadyCompleted() throws {
+        let offloader = offloader()
+        let plan = try offloader.plan(runtime: "24A434", volumeUUID: uuid)
+        try ManifestStore(paths: paths).save(Manifest(runtimes: [OffloadedRuntime(
+            build: "24A434", volumeUUID: uuid, imagePath: "elsewhere.dmg")]))
+        XCTAssertThrowsError(try offloader.run(plan)) {
+            XCTAssertEqual($0 as? OffloadError, .alreadyOffloaded(build: "24A434"))
+        }
+        XCTAssertTrue(imageStore.copies.isEmpty)
+        XCTAssertTrue(simulators.deleted.isEmpty)
+    }
+
+
+    func testASimulatorStartedInsideTheFinalDestinationProbePreventsDeletion() throws {
+        onEvent = { [unowned self] event in
+            if event == .removingInternalCopy {
+                self.onVolumeLookup = { [unowned self] in self.startAnotherSimulator(state: "Booting") }
+            }
+        }
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))) {
+            XCTAssertEqual($0 as? OffloadError, .simulatorsBooted(["Other simulator"]))
+        }
+        XCTAssertTrue(simulators.deleted.isEmpty)
+        XCTAssertTrue(files.fileExists(atPath: source))
+        XCTAssertEqual(services.serviceRestarts, 0)
+    }
+
+    func testASimulatorStartedInsideTheRetryDestinationProbePreventsTheSecondDeletion() throws {
+        simulators.onDelete = { _, _ in } // first deletion leaves the internal copy intact
+        onEvent = { [unowned self] event in
+            if event == .retryingRemoval {
+                self.onVolumeLookup = { [unowned self] in self.startAnotherSimulator(state: "Booting") }
+            }
+        }
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.run(try offloader.plan(runtime: "24A434", volumeUUID: uuid))) {
+            XCTAssertEqual($0 as? OffloadError, .simulatorsBooted(["Other simulator"]))
+        }
+        XCTAssertEqual(simulators.deleted, ["AAAA-1111"])
+        XCTAssertTrue(files.fileExists(atPath: source))
+        XCTAssertEqual(services.serviceRestarts, 0)
+    }
+
 }

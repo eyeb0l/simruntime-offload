@@ -17,7 +17,7 @@ public enum RestoreError: Error, Equatable, CustomStringConvertible {
         case .notOffloaded(let name):
             return "no offloaded runtime matches \"\(name)\"; `simruntime-offload list` shows what is offloaded"
         case .simulatorsBooted(let names):
-            return "these simulators are booted: \(names.joined(separator: ", ")). Shut them down first; nothing was changed"
+            return "these simulators are running or changing state: \(names.joined(separator: ", ")). Shut them down before retrying; no further runtime changes were made"
         case .volumeNotConnected(let name, let uuid):
             return "the volume \(name.map { "\"\($0)\"" } ?? uuid) holding this runtime is not connected; nothing was changed"
         case .imageMissing(let path):
@@ -77,7 +77,7 @@ public struct Restorer {
     private let fileSystem: FileSystemProbing
     private let store: ManifestStore
     private let releaser: Releaser
-    private let sync: (Manifest) throws -> [SyncOutcome]
+    private let sync: (StateLock) throws -> [SyncOutcome]
     private let pause: (TimeInterval) -> Void
     private let report: (RestoreEvent) -> Void
     /// Free space on the internal disk, or `nil` when it cannot be read.
@@ -92,7 +92,7 @@ public struct Restorer {
         services: ServiceControlling,
         fileSystem: FileSystemProbing = FileSystem(),
         internalFreeBytes: @escaping () -> Int64? = Restorer.systemInternalFreeBytes,
-        sync: @escaping (Manifest) throws -> [SyncOutcome],
+        sync: @escaping (StateLock) throws -> [SyncOutcome],
         pause: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
         report: @escaping (RestoreEvent) -> Void = { _ in }
     ) {
@@ -104,7 +104,11 @@ public struct Restorer {
         self.fileSystem = fileSystem
         self.store = ManifestStore(paths: paths)
         self.releaser = Releaser(
-            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause)
+            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause,
+            requireIdle: {
+                let running = try simulators.devices().filter(\.requiresRuntime).map(\.name)
+                guard running.isEmpty else { throw RestoreError.simulatorsBooted(running) }
+            })
         self.internalFreeBytes = internalFreeBytes
         self.sync = sync
         self.pause = pause
@@ -132,7 +136,7 @@ public struct Restorer {
         guard matches.count == 1, let entry = matches.first else { throw RestoreError.notOffloaded(name) }
 
         // Ejecting an image restarts a helper every simulator depends on.
-        let booted = try simulators.devices().filter(\.isBooted).map(\.name)
+        let booted = try simulators.devices().filter(\.requiresRuntime).map(\.name)
         guard booted.isEmpty else { throw RestoreError.simulatorsBooted(booted) }
 
         let internalCopy = try simulators.images().contains { $0.build == entry.build }
@@ -155,10 +159,17 @@ public struct Restorer {
 
     // MARK: Execution
 
-    public func run(_ plan: RestorePlan, deleteImage: Bool, forceUnmount: Bool) throws {
+    public func run(_ proposed: RestorePlan, deleteImage: Bool, forceUnmount: Bool) throws {
+        let lock = try acquireLock()
+        defer { lock.release() }
+        try run(proposed, deleteImage: deleteImage, forceUnmount: forceUnmount, holding: lock)
+    }
+
+    func run(_ proposed: RestorePlan, deleteImage: Bool, forceUnmount: Bool, holding lock: StateLock) throws {
+        lock.requireHeld(for: paths)
+        let plan = try plan(runtime: proposed.entry.build)
         var entry = plan.entry
         let build = entry.build
-        let wasStaged = entry.staged
 
         // Checked before anything is touched: a damaged image must leave the
         // runtime exactly as it was, still served from the volume.
@@ -169,22 +180,17 @@ public struct Restorer {
             }
         }
 
-        // Held to the end, so that the agent cannot re-attach the image while
-        // the same build is being imported.
-        let lock = try acquireLock()
-        defer { lock.release() }
-
         // Staged from here on: if this process dies, the agent leaves the
         // build alone and a second `restore` picks up where this one stopped.
+        try requireIdle()
         entry.staged = true
+        entry.offloadSource = nil
         try save(entry)
 
         /// Back to being served from the volume.
         func rollBack() {
-            entry.staged = wasStaged
-            try? save(entry)
-            lock.release()
-            _ = try? sync((try? store.load()) ?? Manifest())
+            try? save(plan.entry)
+            _ = try? sync(lock)
         }
 
         report(plan.alreadyInternal ? .alreadyInternal : .releasing)
@@ -193,18 +199,28 @@ public struct Restorer {
         } catch let EjectError.stillInUse(_, message) {
             rollBack()
             throw RestoreError.stillInUse(build: build, message: message)
+        } catch {
+            rollBack()
+            throw error
         }
 
         if !plan.alreadyInternal {
             report(.importing(from: plan.image))
+            do { try requireIdle() }
+            catch { rollBack(); throw error }
             do {
                 try simulators.addImage(path: plan.image)
+            } catch ProcessRunError.timedOut {
+                throw RestoreError.notRegistered(build: build)
             } catch {
                 // The command's status does not settle it. If the build is
                 // not registered, nothing was imported and it is safe to go
                 // back; if it is, carry on to the checks below.
                 try? simulators.scanAndMount()
-                if !isRegistered(build) {
+                guard let images = try? simulators.images() else {
+                    throw RestoreError.notRegistered(build: build)
+                }
+                if !images.contains(where: { $0.build == build }) {
                     rollBack()
                     throw RestoreError.importFailed(build: build, message: "\(error)")
                 }
@@ -234,12 +250,18 @@ public struct Restorer {
         // The service may still describe the runtime at its old location.
         if !waitUntil({ listedInternally(build) != nil }, attempts: 10, interval: 1) {
             report(.restartingCoreSimulator)
+            try requireIdle()
             services.restartCoreSimulatorService()
             guard waitUntil({ listedInternally(build) != nil }, attempts: 15, interval: 1) else {
                 throw RestoreError.notListed(build: build)
             }
         }
         report(.done(name: listedInternally(build)?.name ?? entry.name))
+    }
+
+    private func requireIdle() throws {
+        let running = try simulators.devices().filter(\.requiresRuntime).map(\.name)
+        guard running.isEmpty else { throw RestoreError.simulatorsBooted(running) }
     }
 
     private func isRegistered(_ build: String) -> Bool {

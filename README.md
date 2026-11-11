@@ -71,9 +71,11 @@ before trusting it.
 - Nothing else. No SIP changes, no daemon, no helper running as root, no
   kernel or system extension, nothing written to any directory Apple protects.
 
-The way back always works: `restore` puts a runtime on the internal disk again
-from its image, offline, in under a minute, and `uninstall` does that for all
-of them and removes every trace of the tool.
+`restore` imports a verified image back to the internal disk offline, provided
+its volume is connected and the internal disk has enough space. `uninstall`
+restores all runtimes before removing the agent and state. It retains one empty
+coordination file, `~/Library/Application Support/simruntime-offload.lock`, so
+concurrent commands cannot acquire different locks during cleanup.
 
 ## How it works
 
@@ -117,7 +119,10 @@ sudo cp .build/release/simruntime-offload /usr/local/bin/
 ```
 
 `setup` keeps its own copy of the program for the login agent, so where you
-put this one does not matter.
+put this one does not matter. **After upgrading, run `setup` again** to update
+that copy and its job definition. Do not run old and new tool versions together.
+The current source writes manifest format 2; it reads format 1, but older
+releases cannot read format 2.
 
 ## Use
 
@@ -147,7 +152,10 @@ simruntime-offload offload <build> --volume <UUID>
 named by UUID because names are not unique and device nodes change. After the
 first offload, `--volume` can be omitted while only one volume is in use.
 
-Shut down every simulator first; `offload` refuses otherwise. It copies the
+Shut down every simulator first; `offload` also refuses booting or
+shutting-down devices. Keep them shut down throughout the operation: state is
+rechecked after verification and before destructive steps, but another app can
+start a simulator independently of this tool's lock. It copies the
 image, compares the SHA-256 of both copies, runs the disk image's own
 verification, and only then removes the internal one, checking that the space
 really was released. About a minute per runtime on a fast SSD.
@@ -180,13 +188,14 @@ It never deletes an image from the volume. The second form skips the restore,
 which leaves those runtimes installed nowhere until you re-import an image with
 `xcrun simctl runtime add`; it works with the volume unplugged.
 
-Every command that changes anything accepts `--dry-run`.
+Every command that changes anything accepts `--dry-run`, including `sync`.
+A dry run does not create a lock, mount directory, link or log.
 
 ## What it will not do
 
 - Delete an internal runtime before its copy has passed both checks.
 - Report space as freed without looking.
-- Unmount, eject or restart a service while a simulator is booted.
+- Unmount, eject or restart a service without first checking all simulators are shut down.
 - Force an unmount unless you passed `--force-unmount`.
 - Act on a volume chosen by name.
 - Delete an image from your volume unless you passed `--delete-image`.
@@ -196,10 +205,21 @@ Every command that changes anything accepts `--dry-run`.
 
 - `simruntime-offload doctor` and `simruntime-offload list` describe the state
   of the machine and what to run next.
-- The agent's log is `~/Library/Logs/simruntime-offload/agent.log`.
-- A runtime shown as "copied to the volume; internal copy not yet removed" was
-  interrupted mid-offload or mid-restore. Run the same command again; it
-  resumes.
+- `eject` reports success only after ejection or a successful disk listing
+  confirms the volume is absent. A lookup failure, unknown identity or unknown
+  physical disk stops the command without saying it is safe to unplug.
+- The agent's log is `~/Library/Logs/simruntime-offload/agent.log`, capped at
+  1 MiB with one previous log, `agent.log.1`. Besides login and mount events,
+  the agent retries once a minute so lock contention cannot lose a reconnect.
+- System commands have deadlines: 60 seconds normally, 180 seconds for image
+  attachment (including the consent prompt), 300 seconds for image tools and
+  900 seconds for imports. A timed-out import remains staged until `restore`
+  reconciles its registration; the agent does not attach a second copy.
+- A runtime shown as "operation interrupted" needs recovery. For a new
+  interrupted offload, rerun `offload <build>`: its journal, saved checksum and
+  disk-image verification let it finish even after internal deletion. For an
+  interrupted restore, or a staged entry from an older release without a
+  journal, run `restore <build>`. `sync` gives the appropriate command.
 - After installing or upgrading, the agent's first attach waits for you to
   answer macOS's prompt about access to a removable volume, and nothing is
   served until you do. While it waits, other commands report that another

@@ -24,6 +24,9 @@ public struct Paths: Sendable {
     // MARK: State on the internal disk
 
     public var stateDirectory: String { "\(home)/Library/Application Support/simruntime-offload" }
+    /// Kept across uninstall: unlinking a held flock file would let another
+    /// process lock a new inode while the old transaction is still running.
+    public var lockFile: String { "\(home)/Library/Application Support/simruntime-offload.lock" }
     public var manifest: String { "\(stateDirectory)/manifest.json" }
     public var logDirectory: String { "\(home)/Library/Logs/simruntime-offload" }
     public var agentLog: String { "\(logDirectory)/agent.log" }

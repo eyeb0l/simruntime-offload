@@ -31,6 +31,7 @@ final class EjectTests: ScratchTestCase {
         volumeMounted = true
         volumeAttached = true
         try files.createDirectory(atPath: sharedLinks, withIntermediateDirectories: true)
+        try ManifestStore(paths: paths).save(manifest)
         // Both runtimes attached and linked.
         for build in ["24A434", "24B8117"] {
             let mountPoint = paths.mountPoint(forBuild: build)
@@ -55,7 +56,7 @@ final class EjectTests: ScratchTestCase {
             },
             pause: { _ in },
             report: { [unowned self] in self.events.append($0) }
-        ).run(manifest: manifest, forceUnmount: force)
+        ).run(forceUnmount: force)
     }
 
     func testRefusesWhileASimulatorIsBootedAndTouchesNothing() {
@@ -98,7 +99,7 @@ final class EjectTests: ScratchTestCase {
         try Ejector(
             paths: paths, simulators: simulators, attacher: attacher, services: observer, fileSystem: attacher,
             volumeLookup: { _ in nil }, ejectVolume: { _ in nil }, pause: { _ in }
-        ).run(manifest: manifest, forceUnmount: false)
+        ).run(forceUnmount: false)
         XCTAssertEqual(observer.linksAtRestart, [], "the restarted helper must find no offloaded runtime to load from")
         XCTAssertTrue(attacher.attached.isEmpty)
     }
@@ -169,14 +170,14 @@ final class EjectTests: ScratchTestCase {
                 // What the agent would do if a mount woke it at this moment.
                 do {
                     _ = try Sync(paths: self.paths, attacher: self.attacher, fileSystem: self.attacher, volumeLookup: { _ in nil })
-                        .run(manifest: self.manifest, registeredRuntimes: { [] })
+                        .run(registeredRuntimes: { [] })
                 } catch SyncError.alreadyRunning {
                     syncRefusedDuringEject = true
                 } catch {}
                 return nil
             },
             pause: { _ in }
-        ).run(manifest: manifest, forceUnmount: false)
+        ).run(forceUnmount: false)
         XCTAssertTrue(syncRefusedDuringEject)
         XCTAssertTrue(attacher.attached.isEmpty)
         // And the lock is released afterwards.
@@ -203,6 +204,39 @@ final class EjectTests: ScratchTestCase {
         try eject()
         XCTAssertEqual(ejectedVolumes, [uuid])
     }
+    func testASimulatorStartingWhileWaitingForTheLockPreventsAnyRelease() throws {
+        let held = try StateLock.acquire(paths: paths)
+        defer { held.release() }
+        let ejector = Ejector(
+            paths: paths, simulators: simulators, attacher: attacher, services: services, fileSystem: attacher,
+            volumeLookup: { _ in nil }, ejectVolume: { _ in XCTFail("must not eject"); return nil },
+            pause: { [unowned self] _ in
+                self.simulators.deviceList = [Device(udid: "late", name: "Late simulator", state: "Booting",
+                                                    runtimeIdentifier: "other", isAvailable: true)]
+                held.release()
+            })
+        XCTAssertThrowsError(try ejector.run(forceUnmount: false)) {
+            XCTAssertEqual($0 as? EjectError, .simulatorsBooted(["Late simulator"]))
+        }
+        XCTAssertEqual(attacher.attached.count, 2)
+        XCTAssertNotNil(try? files.destinationOfSymbolicLink(atPath: link("24A434")))
+        XCTAssertEqual(services.launchHostRestarts, 0)
+    }
+
+    func testLookupFailureCannotBeTreatedAsAnAbsentDiskOrSuccessfulEject() throws {
+        var ejectedVolume = false
+        let ejector = Ejector(
+            paths: paths, simulators: simulators, attacher: attacher, services: services, fileSystem: attacher,
+            volumeLookup: { _ in throw ProcessRunError.timedOut(executable: "/usr/sbin/diskutil", seconds: 60) },
+            ejectVolume: { _ in ejectedVolume = true; return nil }, pause: { _ in },
+            report: { [unowned self] in self.events.append($0) })
+        XCTAssertThrowsError(try ejector.run(forceUnmount: false)) {
+            XCTAssertEqual($0 as? ProcessRunError, .timedOut(executable: "/usr/sbin/diskutil", seconds: 60))
+        }
+        XCTAssertFalse(ejectedVolume)
+        XCTAssertFalse(events.contains { if case .ejectedVolume = $0 { return true }; return false })
+    }
+
 }
 
 final class AttacherForceTests: XCTestCase {

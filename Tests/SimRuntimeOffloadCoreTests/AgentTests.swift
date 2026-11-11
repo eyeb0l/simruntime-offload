@@ -5,12 +5,14 @@ final class AgentTests: ScratchTestCase {
     func testTheJobRunsSyncAtLoginAndOnMountAtNormalPriority() {
         let plist = Agent(paths: paths, runner: RecordingRunner()).propertyList(program: "/x/simruntime-offload")
         XCTAssertEqual(plist["Label"] as? String, "dev.simruntime-offload.agent")
-        XCTAssertEqual(plist["ProgramArguments"] as? [String], ["/x/simruntime-offload", "sync"])
+        XCTAssertEqual(plist["ProgramArguments"] as? [String], ["/x/simruntime-offload", "sync", "--agent"])
         XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
         XCTAssertEqual(plist["StartOnMount"] as? Bool, true)
+        XCTAssertEqual(plist["StartInterval"] as? Int, 60, "retry mount events missed while the state lock is busy")
         // Background priority delayed the agent by over a minute at login.
         XCTAssertEqual(plist["ProcessType"] as? String, "Interactive")
-        XCTAssertEqual(plist["StandardOutPath"] as? String, paths.agentLog)
+        XCTAssertNil(plist["StandardOutPath"], "the agent writes its bounded log itself")
+        XCTAssertNil(plist["StandardErrorPath"])
     }
 
     func testTheProgramIsNeverAShell() {
@@ -46,7 +48,7 @@ final class AgentTests: ScratchTestCase {
 
         let written = try PropertyListSerialization.propertyList(
             from: try XCTUnwrap(files.contents(atPath: paths.agentPropertyList)), format: nil) as! [String: Any]
-        XCTAssertEqual(written["ProgramArguments"] as? [String], [paths.installedExecutable, "sync"])
+        XCTAssertEqual(written["ProgramArguments"] as? [String], [paths.installedExecutable, "sync", "--agent"])
 
         let domain = "gui/\(getuid())"
         XCTAssertEqual(runner.invocations, [

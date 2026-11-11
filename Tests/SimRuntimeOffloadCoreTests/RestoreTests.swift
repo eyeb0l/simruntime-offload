@@ -13,6 +13,7 @@ class OffloadedMachineTestCase: ScratchTestCase {
     var syncs = 0
     var freeBytes: Int64? = 500_000_000_000
     var volumeConnected = true
+    var onPause: (TimeInterval) -> Void = { _ in }
 
     var volumeRoot: String { "\(root!)/volume" }
     func imagePath(_ build: String) -> String { "\(volumeRoot)/SimRuntimes/\(build)/img.dmg" }
@@ -85,15 +86,15 @@ class OffloadedMachineTestCase: ScratchTestCase {
             volumeLookup: { [unowned self] in self.volume($0) },
             imageStore: imageStore, attacher: attacher, services: services, fileSystem: attacher,
             internalFreeBytes: { [unowned self] in self.freeBytes },
-            sync: { [unowned self] manifest in
+            sync: { [unowned self] lock in
                 self.syncs += 1
                 // The real thing, so that a rollback really re-attaches.
                 return try Sync(
                     paths: self.paths, attacher: self.attacher, fileSystem: self.attacher,
                     volumeLookup: { self.volume($0) }
-                ).run(manifest: manifest, registeredRuntimes: { [] })
+                ).run(holding: lock, registeredRuntimes: { [] })
             },
-            pause: { _ in },
+            pause: { [unowned self] in self.onPause($0) },
             report: { [unowned self] in self.restoreEvents.append($0) })
     }
 
@@ -293,4 +294,72 @@ final class RestoreTests: OffloadedMachineTestCase {
         try restore()
         XCTAssertTrue(agentWasTurnedAway)
     }
+
+    func testASimulatorStartedDuringHashingLeavesTheRuntimeServedAndDoesNotImport() throws {
+        imageStore.onHash = { [unowned self] _ in
+            self.simulators.deviceList = [Device(udid: "other", name: "Late simulator", state: "Booting",
+                                                runtimeIdentifier: "other-runtime", isAvailable: true)]
+        }
+        XCTAssertThrowsError(try restore()) {
+            XCTAssertEqual($0 as? RestoreError, .simulatorsBooted(["Late simulator"]))
+        }
+        XCTAssertTrue(attacher.ejected.isEmpty)
+        XCTAssertTrue(simulators.added.isEmpty)
+        XCTAssertEqual(services.launchHostRestarts, 0)
+        try assertStillOffloaded()
+    }
+
+    func testAStaleRestorePlanCannotSkipImportAndDeleteTheExternalImage() throws {
+        simulators.imageList = [internalImage("24A434")]
+        let restorer = restorer()
+        let stale = try restorer.plan(runtime: "24A434")
+        XCTAssertTrue(stale.alreadyInternal)
+        // An external actor removed the internal registration after planning.
+        simulators.imageList = []
+        try restorer.run(stale, deleteImage: true, forceUnmount: false)
+        XCTAssertEqual(simulators.added, [imagePath("24A434")], "execution must replan under the lock")
+        XCTAssertEqual(imageStore.removed.count, 1)
+    }
+
+    func testATimedOutImportStaysStagedAndDoesNotReattachAnAmbiguousCopy() throws {
+        simulators.addError = ProcessRunError.timedOut(executable: "/usr/bin/xcrun", seconds: 900)
+        XCTAssertThrowsError(try restore()) {
+            XCTAssertEqual($0 as? RestoreError, .notRegistered(build: "24A434"))
+        }
+        let entry = try XCTUnwrap(try ManifestStore(paths: paths).load().runtimes.first)
+        XCTAssertTrue(entry.isStaged)
+        XCTAssertNil(entry.offloadSource)
+        XCTAssertEqual(syncs, 0)
+        XCTAssertTrue(attacher.attached.isEmpty)
+        XCTAssertTrue(files.fileExists(atPath: imagePath("24A434")))
+        XCTAssertNoThrow(try StateLock.acquire(paths: paths).release())
+    }
+
+
+    func testASimulatorStartingDuringReleaseWaitPreventsTheHelperRestartAndRollsBack() throws {
+        onPause = { [unowned self] _ in
+            self.simulators.deviceList = [Device(udid: "late", name: "Late simulator", state: "Booting",
+                                                runtimeIdentifier: "other", isAvailable: true)]
+        }
+        XCTAssertThrowsError(try restore()) {
+            XCTAssertEqual($0 as? RestoreError, .simulatorsBooted(["Late simulator"]))
+        }
+        XCTAssertEqual(services.launchHostRestarts, 0)
+        XCTAssertTrue(simulators.added.isEmpty)
+        XCTAssertTrue(attacher.ejected.isEmpty)
+        try assertStillOffloaded()
+    }
+
+    func testAFailedImportWithAVerifyingRegistrationDoesNotAttachADuplicate() throws {
+        simulators.addError = SimulatorsError.commandFailed(command: "import", status: 1, message: "unfinished")
+        simulators.onScan = { [unowned self] sim in sim.imageList = [self.internalImage("24A434", state: "Verifying")] }
+        XCTAssertThrowsError(try restore()) {
+            XCTAssertEqual($0 as? RestoreError, .notRegistered(build: "24A434"))
+        }
+        XCTAssertTrue(try XCTUnwrap(ManifestStore(paths: paths).load().runtimes.first).isStaged)
+        XCTAssertEqual(syncs, 0)
+        XCTAssertTrue(attacher.attached.isEmpty)
+        XCTAssertTrue(files.fileExists(atPath: imagePath("24A434")))
+    }
+
 }

@@ -13,6 +13,8 @@ public enum OffloadError: Error, Equatable, CustomStringConvertible {
     case destinationDiffers(path: String)
     case notReclaimed(build: String)
     case notServed(build: String)
+    case cannotResume(build: String)
+    case volumeChanged(uuid: String)
 
     public var description: String {
         switch self {
@@ -23,7 +25,7 @@ public enum OffloadError: Error, Equatable, CustomStringConvertible {
         case .alreadyOffloaded(let build):
             return "build \(build) is already served from an external volume"
         case .simulatorsBooted(let names):
-            return "these simulators are booted: \(names.joined(separator: ", ")). Shut them down first; nothing was changed"
+            return "these simulators are running or changing state: \(names.joined(separator: ", ")). Shut them down before retrying; no further runtime changes were made"
         case .noVolumeChosen:
             return "choose the volume with --volume <UUID> (`diskutil info /Volumes/<name>` shows a volume's UUID)"
         case .volumeNotMounted(let uuid):
@@ -37,7 +39,11 @@ public enum OffloadError: Error, Equatable, CustomStringConvertible {
         case .destinationDiffers(let path):
             return "\(path) already exists and is not a copy of this runtime; it has been left alone. Move or delete it, then run the command again"
         case .notReclaimed(let build):
-            return "the copy on the volume is verified, but macOS did not release the internal copy of \(build). It is still installed and usable. Run `simruntime-offload offload \(build)` again later to finish"
+            return "the copy on the volume is verified, but macOS did not release the internal copy of \(build). Its internal state could not be confirmed clear. Run `simruntime-offload offload \(build)` again later to finish"
+        case .cannotResume(let build):
+            return "the interrupted operation for \(build) has no offload journal; run `simruntime-offload restore \(build)` to recover it safely"
+        case .volumeChanged(let uuid):
+            return "the destination volume \(uuid) changed or its image disappeared; the internal copy has not been removed"
         case .notServed(let build):
             return "the internal copy of \(build) was removed and its image is safe on the volume, but CoreSimulator does not list it yet. It should appear after your next login; `simruntime-offload doctor` will show"
         }
@@ -47,12 +53,15 @@ public enum OffloadError: Error, Equatable, CustomStringConvertible {
 /// Everything `offload` has worked out before it changes anything.
 public struct OffloadPlan: Equatable, Sendable {
     public let image: RuntimeImage
-    /// The disk image file on the internal disk.
-    public let source: String
+    /// The disk image file on the internal disk, absent when resuming after deletion.
+    public let source: String?
     public let volume: Volume
     /// Where the copy goes, as an absolute path and relative to the volume.
     public let destination: String
     public let relativeDestination: String
+    /// The source was already removed; finish from the saved journal.
+    public let recoveryEntry: OffloadedRuntime?
+    public var isResuming: Bool { recoveryEntry != nil }
 }
 
 public enum OffloadEvent: Equatable, Sendable {
@@ -81,7 +90,7 @@ public struct Offloader {
     private let services: ServiceControlling
     private let fileSystem: FileSystemProbing
     private let store: ManifestStore
-    private let sync: (Manifest) throws -> [SyncOutcome]
+    private let sync: (StateLock) throws -> [SyncOutcome]
     private let pause: (TimeInterval) -> Void
     private let report: (OffloadEvent) -> Void
 
@@ -92,7 +101,7 @@ public struct Offloader {
         imageStore: ImageStoring,
         services: ServiceControlling,
         fileSystem: FileSystemProbing = FileSystem(),
-        sync: @escaping (Manifest) throws -> [SyncOutcome],
+        sync: @escaping (StateLock) throws -> [SyncOutcome],
         pause: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
         report: @escaping (OffloadEvent) -> Void = { _ in }
     ) {
@@ -116,14 +125,29 @@ public struct Offloader {
         do {
             image = try resolve(name, among: try simulators.images())
         } catch OffloadError.runtimeNotFound {
-            // Say so when the reason it is not on the internal disk is that
-            // it has been offloaded already.
-            if let done = manifest.runtimes.first(where: {
-                !$0.isStaged && $0.build.caseInsensitiveCompare(name) == .orderedSame
-            }) {
-                throw OffloadError.alreadyOffloaded(build: done.build)
+            let matches = manifest.runtimes.filter {
+                $0.build.caseInsensitiveCompare(name) == .orderedSame
+                    || $0.runtimeIdentifier?.caseInsensitiveCompare(name) == .orderedSame
             }
-            throw OffloadError.runtimeNotFound(name)
+            guard matches.count == 1, let entry = matches.first else {
+                throw OffloadError.runtimeNotFound(name)
+            }
+            guard entry.isStaged else { throw OffloadError.alreadyOffloaded(build: entry.build) }
+            guard let original = entry.offloadSource, entry.sha256 != nil else {
+                throw OffloadError.cannotResume(build: entry.build)
+            }
+            try requireIdle()
+            let uuid = volumeUUID ?? entry.volumeUUID
+            guard uuid.caseInsensitiveCompare(entry.volumeUUID) == .orderedSame,
+                  let volume = volumeLookup(uuid), let root = volume.mountPoint else {
+                throw OffloadError.volumeNotMounted(uuid: entry.volumeUUID)
+            }
+            guard !volume.isInternal else { throw OffloadError.internalVolume(name: volume.name) }
+            let destination = "\(root)/\(entry.imagePath)"
+            guard fileSystem.fileExists(destination) else { throw OffloadError.imageNotFound(path: destination) }
+            return OffloadPlan(
+                image: original, source: nil, volume: volume,
+                destination: destination, relativeDestination: entry.imagePath, recoveryEntry: entry)
         }
         if manifest.runtimes.contains(where: { $0.build == image.build && !$0.isStaged }) {
             throw OffloadError.alreadyOffloaded(build: image.build)
@@ -131,8 +155,7 @@ public struct Offloader {
 
         // Removing a runtime, and restarting the service afterwards, must
         // never happen underneath a running simulator.
-        let booted = try simulators.devices().filter(\.isBooted).map(\.name)
-        guard booted.isEmpty else { throw OffloadError.simulatorsBooted(booted) }
+        try requireIdle()
 
         let uuid = try volumeUUID ?? defaultVolume(in: manifest)
         guard let volume = volumeLookup(uuid), let volumeRoot = volume.mountPoint else {
@@ -160,7 +183,7 @@ public struct Offloader {
         }
         return OffloadPlan(
             image: image, source: source, volume: volume,
-            destination: destination, relativeDestination: relative)
+            destination: destination, relativeDestination: relative, recoveryEntry: nil)
     }
 
     private func resolve(_ name: String, among images: [RuntimeImage]) throws -> RuntimeImage {
@@ -194,21 +217,41 @@ public struct Offloader {
 
     // MARK: Execution
 
-    public func run(_ plan: OffloadPlan) throws {
+    public func run(_ proposed: OffloadPlan) throws {
+        let lock = try StateLock.acquire(paths: paths)
+        defer { lock.release() }
+        // Plans are previews, never authority to mutate stale state.
+        let plan = try plan(runtime: proposed.image.build, volumeUUID: proposed.volume.uuid)
         let build = plan.image.build
 
+        if var entry = plan.recoveryEntry {
+            // A rescan can expose an original whose delete had only dropped
+            // its registration. Never activate a second copy of that build.
+            try simulators.scanAndMount()
+            guard waitUntilReclaimed(plan.image) else { throw OffloadError.notReclaimed(build: build) }
+            guard try imageStore.sha256(ofFile: plan.destination) == entry.sha256 else {
+                throw OffloadError.destinationDiffers(path: plan.destination)
+            }
+            try imageStore.verifyImage(at: plan.destination)
+            report(.reusingVerifiedCopy(path: plan.destination))
+            try activate(&entry, holding: lock)
+            return
+        }
+
+        guard let source = plan.source else { throw OffloadError.cannotResume(build: build) }
         // 1. Copy and verify. Nothing internal has been touched yet.
         let checksum: String
         if fileSystem.fileExists(plan.destination) {
             // A previous attempt got this far. Trust nothing: compare again.
-            checksum = try imageStore.sha256(ofFile: plan.source)
+            checksum = try imageStore.sha256(ofFile: source)
             guard try imageStore.sha256(ofFile: plan.destination) == checksum else {
                 throw OffloadError.destinationDiffers(path: plan.destination)
             }
+            try imageStore.verifyImage(at: plan.destination)
             report(.reusingVerifiedCopy(path: plan.destination))
         } else {
-            report(.copying(from: plan.source, to: plan.destination))
-            checksum = try imageStore.copyVerified(from: plan.source, to: plan.destination) { done, total in
+            report(.copying(from: source, to: plan.destination))
+            checksum = try imageStore.copyVerified(from: source, to: plan.destination) { done, total in
                 report(.copyProgress(done: done, total: total))
             }
         }
@@ -221,12 +264,14 @@ public struct Offloader {
         var entry = OffloadedRuntime(
             build: build, runtimeIdentifier: plan.image.runtimeIdentifier, name: name,
             volumeUUID: plan.volume.uuid, imagePath: plan.relativeDestination,
-            sha256: checksum, sizeBytes: plan.image.sizeBytes, staged: true)
+            sha256: checksum, sizeBytes: plan.image.sizeBytes, staged: true, offloadSource: plan.image)
         try save(entry)
 
         // 3. Point of no return: remove the internal copy, and check that it
         //    is really gone rather than trusting the command's exit status.
         report(.removingInternalCopy)
+        try requireDestination(plan)
+        try requireIdle()
         try? simulators.deleteImage(identifier: plan.image.identifier)
         try? simulators.scanAndMount()
         if !waitUntilReclaimed(plan.image) {
@@ -234,6 +279,8 @@ public struct Offloader {
             // under a new identifier. Deleting that one is the documented fix.
             report(.retryingRemoval)
             for leftover in ((try? simulators.images()) ?? []).filter({ $0.build == build }) {
+                try requireDestination(plan)
+                try requireIdle()
                 try? simulators.deleteImage(identifier: leftover.identifier)
             }
             try? simulators.scanAndMount()
@@ -241,29 +288,22 @@ public struct Offloader {
         }
         report(.reclaimed)
 
-        // 4. The running service still holds the deleted runtime and would
-        //    reject the same build from the volume as a duplicate.
-        report(.restartingCoreSimulator)
-        services.restartCoreSimulatorService()
+        try activate(&entry, holding: lock)
+    }
 
-        // 5. Serve it from the volume.
+    private func activate(_ entry: inout OffloadedRuntime, holding lock: StateLock) throws {
+        let build = entry.build
+        // Recheck after copying, verification and reclamation waits: another
+        // application can start a simulator without taking our advisory lock.
+        report(.restartingCoreSimulator)
+        try requireIdle()
+        services.restartCoreSimulatorService()
         entry.staged = nil
+        entry.offloadSource = nil
         entry.offloadedAt = Date()
         try save(entry)
         report(.attaching)
-        // The login agent reacts to mounts and may be syncing at this very
-        // moment. Wait for it rather than fail; whichever of us attaches the
-        // image, the check below is what decides the outcome.
-        for attempt in 1...5 {
-            do {
-                _ = try sync(try store.load())
-                break
-            } catch SyncError.alreadyRunning where attempt < 5 {
-                pause(2)
-            } catch SyncError.alreadyRunning {
-                break
-            }
-        }
+        _ = try sync(lock)
 
         let mountPoint = paths.mountPoint(forBuild: build)
         for _ in 0..<10 {
@@ -274,6 +314,20 @@ public struct Offloader {
             pause(1)
         }
         throw OffloadError.notServed(build: build)
+    }
+
+    private func requireIdle() throws {
+        let running = try simulators.devices().filter(\.requiresRuntime).map(\.name)
+        guard running.isEmpty else { throw OffloadError.simulatorsBooted(running) }
+    }
+
+    private func requireDestination(_ plan: OffloadPlan) throws {
+        guard let current = volumeLookup(plan.volume.uuid),
+              current.uuid.caseInsensitiveCompare(plan.volume.uuid) == .orderedSame,
+              current.mountPoint == plan.volume.mountPoint,
+              fileSystem.fileExists(plan.destination) else {
+            throw OffloadError.volumeChanged(uuid: plan.volume.uuid)
+        }
     }
 
     private func save(_ entry: OffloadedRuntime) throws {

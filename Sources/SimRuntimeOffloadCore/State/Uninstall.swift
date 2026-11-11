@@ -7,7 +7,7 @@ public enum UninstallError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .simulatorsBooted(let names):
-            return "these simulators are booted: \(names.joined(separator: ", ")). Shut them down first; nothing was changed"
+            return "these simulators are running or changing state: \(names.joined(separator: ", ")). Shut them down before retrying; no further runtime changes were made"
         case .notEnoughSpace(let needed, let free):
             return "restoring every runtime needs \(needed / 1_000_000_000) GB on the internal disk and \(free / 1_000_000_000) GB is free. Nothing was changed. Restore some individually, or use --leave-runtimes-on-volume"
         }
@@ -78,7 +78,11 @@ public struct Uninstaller {
         self.simulators = simulators
         self.restorer = restorer
         self.releaser = Releaser(
-            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause)
+            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause,
+            requireIdle: {
+                let running = try simulators.devices().filter(\.requiresRuntime).map(\.name)
+                guard running.isEmpty else { throw UninstallError.simulatorsBooted(running) }
+            })
         self.agent = agent
         self.fileSystem = fileSystem
         self.volumeLookup = volumeLookup
@@ -89,7 +93,7 @@ public struct Uninstaller {
     public func plan(leaveRuntimesOnVolume: Bool) throws -> UninstallPlan {
         let manifest = try store.load()
         if !manifest.runtimes.isEmpty {
-            let booted = try simulators.devices().filter(\.isBooted).map(\.name)
+            let booted = try simulators.devices().filter(\.requiresRuntime).map(\.name)
             guard booted.isEmpty else { throw UninstallError.simulatorsBooted(booted) }
         }
         if leaveRuntimesOnVolume {
@@ -106,7 +110,10 @@ public struct Uninstaller {
         return UninstallPlan(leaveRuntimesOnVolume: false, restores: restores, released: [])
     }
 
-    public func run(_ plan: UninstallPlan, forceUnmount: Bool) throws -> UninstallSummary {
+    public func run(_ proposed: UninstallPlan, forceUnmount: Bool) throws -> UninstallSummary {
+        let lock = try StateLock.acquire(paths: paths)
+        defer { lock.release() }
+        let plan = try plan(leaveRuntimesOnVolume: proposed.leaveRuntimesOnVolume)
         var summary = UninstallSummary()
         let agentFiles = [paths.agentPropertyList, paths.installedExecutable].filter(files.fileExists(atPath:))
 
@@ -115,8 +122,6 @@ public struct Uninstaller {
             // released below.
             try agent.uninstall()
             report(.removedAgent)
-            let lock = try StateLock.acquire(paths: paths)
-            defer { lock.release() }
             try releaser.releaseAll(
                 builds: plan.released.map(\.build), forceUnmount: forceUnmount,
                 released: { build, _ in report(.stoppedServing(build: build)) })
@@ -125,7 +130,7 @@ public struct Uninstaller {
             for restore in plan.restores {
                 report(.restoring(build: restore.entry.build))
                 do {
-                    try restorer.run(restore, deleteImage: false, forceUnmount: forceUnmount)
+                    try restorer.run(restore, deleteImage: false, forceUnmount: forceUnmount, holding: lock)
                 } catch RestoreError.notListed {
                     // Imported and ready; only the listing lags. Not a reason
                     // to leave the uninstall half done.
@@ -139,8 +144,11 @@ public struct Uninstaller {
 
         summary.removed += agentFiles.filter { !files.fileExists(atPath: $0) }
         removeFile(paths.manifest, &summary)
+        // Legacy releases used this removable path. Current releases share
+        // the permanent lock outside the state directory instead.
         removeFile("\(paths.stateDirectory)/sync.flock", &summary)
         removeFile(paths.agentLog, &summary)
+        removeFile(paths.agentLog + ".1", &summary)
         removeEmptyDirectory((paths.installedExecutable as NSString).deletingLastPathComponent, &summary)
         removeEmptyDirectory(paths.logDirectory, &summary)
         removeEmptyDirectory(paths.stateDirectory, &summary)

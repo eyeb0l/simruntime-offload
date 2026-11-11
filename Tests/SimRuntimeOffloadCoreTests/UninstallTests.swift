@@ -4,6 +4,7 @@ import XCTest
 final class UninstallTests: OffloadedMachineTestCase {
     private var runner: RecordingRunner!
     private var events: [UninstallEvent] = []
+    private var onEvent: (UninstallEvent) -> Void = { _ in }
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -31,7 +32,7 @@ final class UninstallTests: OffloadedMachineTestCase {
             agent: Agent(paths: paths, runner: runner), fileSystem: attacher,
             volumeLookup: { [unowned self] in self.volume($0) },
             pause: { _ in },
-            report: { [unowned self] in self.events.append($0) })
+            report: { [unowned self] in self.events.append($0); self.onEvent($0) })
     }
 
     private func uninstall(leave: Bool = false) throws -> UninstallSummary {
@@ -152,4 +153,54 @@ final class UninstallTests: OffloadedMachineTestCase {
         try ImageStore().removeImage(at: "\(directory)/a.dmg")
         XCTAssertTrue(files.fileExists(atPath: "\(directory)/asset-metadata"), "anything else keeps the directory")
     }
+
+    func testUninstallHoldsOneStableLockFromAgentRemovalThroughCleanup() throws {
+        var checked = false
+        onEvent = { [unowned self] event in
+            guard event == .removedAgent else { return }
+            checked = true
+            do {
+                let unexpected = try StateLock.acquire(paths: self.paths)
+                unexpected.release()
+                XCTFail("uninstall must keep the state lock through agent removal")
+            } catch { XCTAssertEqual(error as? SyncError, .alreadyRunning) }
+        }
+        let originalLock = try StateLock.acquire(paths: paths)
+        originalLock.release()
+        let inode = try files.attributesOfItem(atPath: paths.lockFile)[.systemFileNumber] as? NSNumber
+        _ = try uninstall(leave: true)
+        XCTAssertTrue(checked)
+        XCTAssertTrue(files.fileExists(atPath: paths.lockFile))
+        XCTAssertEqual(try files.attributesOfItem(atPath: paths.lockFile)[.systemFileNumber] as? NSNumber, inode)
+        XCTAssertNoThrow(try StateLock.acquire(paths: paths).release())
+        assertNothingOfOursRemains()
+    }
+
+    func testUninstallReplansToIncludeARuntimeAddedAfterItsPreview() throws {
+        let uninstaller = uninstaller()
+        let preview = try uninstaller.plan(leaveRuntimesOnVolume: false)
+        try offload("NEW-BUILD")
+        _ = try uninstaller.run(preview, forceUnmount: false)
+        XCTAssertEqual(simulators.added.count, 3)
+        XCTAssertTrue(simulators.added.contains(imagePath("NEW-BUILD")))
+        assertNothingOfOursRemains()
+    }
+
+    func testUninstallRemovesBothBoundedLogFiles() throws {
+        try Data("previous log".utf8).write(to: URL(fileURLWithPath: paths.agentLog + ".1"))
+        _ = try uninstall(leave: true)
+        XCTAssertFalse(files.fileExists(atPath: paths.agentLog + ".1"))
+        assertNothingOfOursRemains()
+    }
+
+
+    func testUninstallCleansUpTheLegacyLockButRetainsThePermanentOne() throws {
+        let legacy = "\(paths.stateDirectory)/sync.flock"
+        try Data().write(to: URL(fileURLWithPath: legacy))
+        _ = try uninstall(leave: true)
+        XCTAssertFalse(files.fileExists(atPath: legacy))
+        XCTAssertTrue(files.fileExists(atPath: paths.lockFile))
+        assertNothingOfOursRemains()
+    }
+
 }

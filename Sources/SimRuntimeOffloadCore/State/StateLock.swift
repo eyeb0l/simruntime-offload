@@ -10,22 +10,28 @@ import Foundation
 /// holder dies, so it can never be left stale.
 public final class StateLock {
     private var descriptor: Int32
+    private let path: String
 
-    private init(descriptor: Int32) {
+    private init(descriptor: Int32, path: String) {
+        self.path = path
         self.descriptor = descriptor
     }
 
     /// Takes the lock, or throws `SyncError.alreadyRunning` at once if another
     /// process holds it.
     public static func acquire(paths: Paths) throws -> StateLock {
-        try FileManager.default.createDirectory(atPath: paths.stateDirectory, withIntermediateDirectories: true)
-        let descriptor = open("\(paths.stateDirectory)/sync.flock", O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        try FileManager.default.createDirectory(atPath: (paths.lockFile as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let descriptor = open(paths.lockFile, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw SyncError.alreadyRunning }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
             close(descriptor)
             throw SyncError.alreadyRunning
         }
-        return StateLock(descriptor: descriptor)
+        return StateLock(descriptor: descriptor, path: paths.lockFile)
+    }
+
+    func requireHeld(for paths: Paths) {
+        precondition(descriptor >= 0 && path == paths.lockFile, "the transaction must hold its state lock")
     }
 
     public func release() {
