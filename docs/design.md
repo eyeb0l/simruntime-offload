@@ -235,7 +235,9 @@ failing does not stop the others.
 
 ### 5.5 `eject`
 
-1. Refuse if any simulator is booted, naming them.
+1. Refuse if any simulator is running or changing state, naming them. Reload
+   the manifest under the transaction lock; if it is now empty, return a no-op
+   outcome without an unplug assurance.
 2. Remove every runtime's link and wait for CoreSimulator to unload them;
    restart `SimLaunchHost` once (hazard 3); then eject each mounted image,
    retrying for ten seconds (hazard 5). As first built this was done runtime

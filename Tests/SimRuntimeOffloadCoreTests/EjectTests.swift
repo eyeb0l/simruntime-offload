@@ -237,6 +237,31 @@ final class EjectTests: ScratchTestCase {
         XCTAssertFalse(events.contains { if case .ejectedVolume = $0 { return true }; return false })
     }
 
+    func testAnEmptyManifestAfterTheLockWaitDoesNotPermitAnUnplugAssurance() throws {
+        // The CLI saw offloaded entries before waiting. A concurrent restore
+        // then removed the final entries but left the external disk mounted.
+        XCTAssertFalse(try ManifestStore(paths: paths).load().runtimes.isEmpty)
+        let held = try StateLock.acquire(paths: paths)
+        defer { held.release() }
+        var lookupWasCalled = false
+        var ejectWasCalled = false
+        let ejector = Ejector(
+            paths: paths, simulators: simulators, attacher: attacher, services: services, fileSystem: attacher,
+            volumeLookup: { _ in lookupWasCalled = true; return nil },
+            ejectVolume: { _ in ejectWasCalled = true; return nil },
+            pause: { [unowned self] _ in
+                do { try ManifestStore(paths: self.paths).save(Manifest()) }
+                catch { XCTFail("\(error)") }
+                held.release()
+            })
+        XCTAssertEqual(try ejector.run(forceUnmount: false), .nothingToEject)
+        XCTAssertFalse(lookupWasCalled)
+        XCTAssertFalse(ejectWasCalled)
+        XCTAssertEqual(services.launchHostRestarts, 0)
+        XCTAssertEqual(attacher.attached.count, 2, "a no-op must leave mounts and links alone")
+        XCTAssertNotNil(try? files.destinationOfSymbolicLink(atPath: link("24A434")))
+    }
+
 }
 
 final class AttacherForceTests: XCTestCase {

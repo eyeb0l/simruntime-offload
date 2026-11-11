@@ -455,7 +455,7 @@ func runEject(arguments: [String]) -> Int32 {
             print("Dry run: nothing was changed.")
             return 0
         }
-        try Ejector(
+        let outcome = try Ejector(
             paths: paths,
             simulators: simulators,
             attacher: Attacher(),
@@ -473,7 +473,12 @@ func runEject(arguments: [String]) -> Int32 {
             }
         ).run(forceUnmount: forceUnmount)
         print("")
-        print("Safe to unplug. Plugging the disk back in re-attaches the runtimes.")
+        switch outcome {
+        case .nothingToEject:
+            print("Nothing is offloaded now; no disks were ejected. Eject the disk in Finder before unplugging it.")
+        case .safeToUnplug:
+            print("Safe to unplug. Plugging the disk back in re-attaches the runtimes.")
+        }
         return 0
     } catch {
         printError("eject: \(error)")

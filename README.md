@@ -166,8 +166,10 @@ simruntime-offload eject
 
 Before unplugging. Releases every runtime and ejects the disk. If something
 still holds a runtime it stops and says so rather than forcing;
-`--force-unmount` exists for when you have decided to. Plugging the disk back
-in needs nothing: the agent re-attaches everything.
+`--force-unmount` exists for when you have decided to. If nothing remains
+offloaded, the command reports a no-op; eject any connected disk in Finder
+before unplugging it. Plugging the disk back in needs nothing: the agent
+re-attaches everything.
 
 ```
 simruntime-offload restore <build>

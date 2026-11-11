@@ -584,4 +584,38 @@ final class OffloadTests: ScratchTestCase {
         XCTAssertEqual(services.serviceRestarts, 0)
     }
 
+
+    func testExecutionPreservesTheImageIdentifierWhichDisambiguatedTheBuild() throws {
+        // Multiple registrations may refer to the same build. Selecting an
+        // identifier must not turn back into an ambiguous build lookup.
+        let other = RuntimeImage(identifier: "OTHER-ID", build: image.build, version: image.version,
+                                 runtimeIdentifier: image.runtimeIdentifier, kind: image.kind, state: image.state,
+                                 path: image.path, mountPath: image.mountPath, sizeBytes: image.sizeBytes, deletable: true)
+        simulators.imageList.append(other)
+        let offloader = offloader()
+        XCTAssertThrowsError(try offloader.plan(runtime: image.build, volumeUUID: uuid)) {
+            guard case .ambiguous? = $0 as? OffloadError else { return XCTFail("\($0)") }
+        }
+        let selected = try offloader.plan(runtime: image.identifier, volumeUUID: uuid)
+        // Both registrations describe the same test file; deleting the file
+        // drops both registrations, just as a rescan can remove aliases.
+        simulators.onDelete = { [unowned self] sim, _ in
+            sim.imageList = []
+            try? self.files.removeItem(atPath: "\(self.root!)/internal/abc.asset")
+        }
+        try offloader.run(selected)
+        XCTAssertEqual(simulators.deleted, [image.identifier])
+        XCTAssertFalse(try XCTUnwrap(try savedEntry()).isStaged)
+    }
+
+    func testRecoveryRecognisesTheOriginalImageIdentifierAfterRegistrationDisappears() throws {
+        try interruptAfterInternalDeletion()
+        let offloader = offloader()
+        let recovery = try offloader.plan(runtime: image.identifier, volumeUUID: nil)
+        XCTAssertTrue(recovery.isResuming)
+        try offloader.run(recovery)
+        XCTAssertEqual(simulators.deleted.count, 1)
+        XCTAssertFalse(try XCTUnwrap(try savedEntry()).isStaged)
+    }
+
 }

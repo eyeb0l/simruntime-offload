@@ -24,6 +24,13 @@ public enum EjectEvent: Equatable, Sendable {
     case ejectedVolume(name: String)
 }
 
+public enum EjectOutcome: Equatable, Sendable {
+    /// A refreshed manifest was empty; no disk identity was checked.
+    case nothingToEject
+    /// Every requested volume was ejected or confirmed absent.
+    case safeToUnplug
+}
+
 /// Releases every offloaded runtime and then the volume, so the disk can be
 /// unplugged.
 ///
@@ -63,7 +70,8 @@ public struct Ejector {
         self.report = report
     }
 
-    public func run(forceUnmount: Bool) throws {
+    @discardableResult
+    public func run(forceUnmount: Bool) throws -> EjectOutcome {
         let booted = try simulators.devices().filter(\.requiresRuntime).map(\.name)
         guard booted.isEmpty else { throw EjectError.simulatorsBooted(booted) }
 
@@ -72,6 +80,7 @@ public struct Ejector {
         let lock = try acquireLock()
         defer { lock.release() }
         let manifest = try ManifestStore(paths: paths).load()
+        guard !manifest.runtimes.isEmpty else { return .nothingToEject }
         try requireIdle()
 
         let releaser = Releaser(
@@ -97,6 +106,7 @@ public struct Ejector {
             }
             report(.ejectedVolume(name: volume.name))
         }
+        return .safeToUnplug
     }
 
     private func requireIdle() throws {

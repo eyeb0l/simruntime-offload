@@ -128,6 +128,7 @@ public struct Offloader {
             let matches = manifest.runtimes.filter {
                 $0.build.caseInsensitiveCompare(name) == .orderedSame
                     || $0.runtimeIdentifier?.caseInsensitiveCompare(name) == .orderedSame
+                    || $0.offloadSource?.identifier.caseInsensitiveCompare(name) == .orderedSame
             }
             guard matches.count == 1, let entry = matches.first else {
                 throw OffloadError.runtimeNotFound(name)
@@ -220,8 +221,9 @@ public struct Offloader {
     public func run(_ proposed: OffloadPlan) throws {
         let lock = try StateLock.acquire(paths: paths)
         defer { lock.release() }
-        // Plans are previews, never authority to mutate stale state.
-        let plan = try plan(runtime: proposed.image.build, volumeUUID: proposed.volume.uuid)
+        // Keep the selected registration's unique identifier when replanning.
+        // After deletion, the staged journal still recognises that identifier.
+        let plan = try plan(runtime: proposed.image.identifier, volumeUUID: proposed.volume.uuid)
         let build = plan.image.build
 
         if var entry = plan.recoveryEntry {
