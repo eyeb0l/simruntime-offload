@@ -140,7 +140,7 @@ Each of these was hit in practice.
 | 4 | **`spindump` may hold the volume.** If the system sampler has sampled simulator processes it keeps their binaries mapped indefinitely. Conditional: often absent. | Try a normal eject with retries; force only as a last, explicit step. |
 | 5 | **`simctl shutdown` returns before processes exit**, notably under a debugger. | Retry the eject for about ten seconds before concluding the volume is held. |
 | 6 | **Sandboxed helpers constrain the mount location.** Success from the command line does not imply Xcode's interface works. | Fixed location; any change must be re-validated against Xcode's device view. |
-| 7 | **Background access to a removable volume** is attributed to the job's executable. | The agent's executable is the tool; consent is asked once. With ad-hoc signing a rebuild may ask again. |
+| 7 | **Background access to a removable volume** is attributed to the job's executable. | The agent's executable is the tool; consent is asked once. With ad-hoc signing a rebuild may ask again; a Developer ID–signed release keeps its identity across versions (expected, not yet tested). |
 | 8 | **Free space is a misleading measure.** Swap on the shared APFS container moved it by 5 GB during an unrelated step. | Measure directory sizes. |
 | 10 | **An import leaves a clone in the daemon's inbox.** After `simctl runtime add`, deleting the runtime does not free its space: a clone in `…/Cryptex/Images/Inbox` keeps the blocks. | Run `simctl runtime scan-and-mount` after every add and delete; verify by measurement. |
 | 9 | **A gap after login.** The runtime cannot exist before the volume is mounted and the image attached. | About 21 s here. Applications started in the gap must recover; Xcode does. |

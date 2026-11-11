@@ -1,0 +1,134 @@
+name: Release
+
+# Pushing a tag such as v0.1.2 builds, signs with Developer ID, notarises and
+# publishes a GitHub Release. The signing secrets live in the `release`
+# environment, which only `v*` tags may deploy to.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    name: Sign, notarise and publish
+    runs-on: xcode-27
+    environment: release
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      # The team that must have signed the binary. Public: it is in every
+      # signature it makes.
+      TEAM_ID: 359794K46A
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          # Only release what went through main, and so through CI.
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not on main."; exit 1; }
+          grep -qF "let toolVersion = \"$version\"" Sources/simruntime-offload/main.swift \
+            || { echo "::error::toolVersion in main.swift is not $version."; exit 1; }
+          grep -q "^## $version " CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no section for $version."; exit 1; }
+
+      - name: Test
+        run: swift test
+
+      - name: Build
+        run: |
+          swift build -c release --arch arm64
+          echo "BINARY=$(swift build -c release --arch arm64 --show-bin-path)/simruntime-offload" >> "$GITHUB_ENV"
+
+      - name: Import the signing certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          # The intermediate the certificate is issued under, which codesign
+          # needs to build the chain. Pinned to its fingerprint.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/g2.cer"
+          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $RUNNER_TEMP/g2.cer" | shasum -a 256 -c
+          security import "$RUNNER_TEMP/g2.cer" -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          # On the search list too, so chain building finds the intermediate.
+          security list-keychains -d user | xargs security list-keychains -d user -s "$keychain"
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      - name: Sign
+        run: |
+          codesign --force --sign "Developer ID Application" --keychain "$KEYCHAIN" \
+            --options runtime --timestamp --identifier simruntime-offload "$BINARY"
+          codesign --verify --strict --verbose=2 "$BINARY"
+          team="$(codesign -dv "$BINARY" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          [ "$team" = "$TEAM_ID" ] \
+            || { echo "::error::Signed by team '$team', expected $TEAM_ID."; exit 1; }
+          "$BINARY" --help > /dev/null
+
+      - name: Package
+        run: |
+          name="simruntime-offload-$VERSION-macos-arm64"
+          stage="$RUNNER_TEMP/$name"
+          mkdir "$stage"
+          cp "$BINARY" LICENSE README.md CHANGELOG.md "$stage/"
+          ditto -c -k --keepParent "$stage" "$RUNNER_TEMP/$name.zip"
+          echo "ARCHIVE=$RUNNER_TEMP/$name.zip" >> "$GITHUB_ENV"
+
+      # A bare executable cannot have its ticket stapled; Gatekeeper looks the
+      # ticket up online the first time it runs.
+      - name: Notarise
+        env:
+          API_KEY: ${{ secrets.NOTARY_API_KEY }}
+          API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/notary.p8"
+          printf '%s\n' "$API_KEY" > "$key"
+          xcrun notarytool submit "$ARCHIVE" --key "$key" --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" --wait --timeout 30m --output-format json \
+            > "$RUNNER_TEMP/notary.json" || true
+          cat "$RUNNER_TEMP/notary.json"
+          status="$(plutil -extract status raw -o - "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
+          if [ "$status" != "Accepted" ]; then
+            id="$(plutil -extract id raw -o - "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
+            [ -n "$id" ] && xcrun notarytool log "$id" --key "$key" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID"
+            echo "::error::Notarisation status: ${status:-no result}"
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP"
+          archive="$(basename "$ARCHIVE")"
+          shasum -a 256 "$archive" > "$archive.sha256"
+          # This version's section of the changelog, without its heading.
+          awk -v v="$VERSION" '/^## / { found = ($2 == v); next } found' \
+            "$GITHUB_WORKSPACE/CHANGELOG.md" > notes.md
+          gh release create "$GITHUB_REF_NAME" "$archive" "$archive.sha256" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$VERSION" --notes-file notes.md
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          [ -n "${KEYCHAIN:-}" ] && security delete-keychain "$KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12"

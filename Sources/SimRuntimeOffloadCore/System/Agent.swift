@@ -53,8 +53,9 @@ public struct Agent {
     /// Copies `executable` to its installed location unless an identical copy
     /// is already there. Returns whether anything was copied.
     ///
-    /// An unchanged copy is left alone on purpose: the tool is ad-hoc signed,
-    /// so a new copy is a new identity and costs the user a new consent prompt.
+    /// An unchanged copy is left alone on purpose: a build from source is
+    /// ad-hoc signed, so a new copy is a new identity and costs the user a new
+    /// consent prompt. Releases are Developer ID signed and keep one identity.
     @discardableResult
     public func installExecutable(from executable: String) throws -> Bool {
         let destination = paths.installedExecutable

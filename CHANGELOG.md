@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Releases are published as a signed and notarised archive for Apple
+  silicon. The program carries a Developer ID signature, so upgrading from
+  one release to the next should not ask again for access to the volume.
+  Builds from source are still ad-hoc signed.
+
 ## 0.1.1 — 2026-11-10
 
 - `eject` restarts the simulator launch helper once for all runtimes instead

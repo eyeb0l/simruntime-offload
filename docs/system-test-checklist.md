@@ -55,3 +55,13 @@ Only with a disk and runtimes you can afford to lose.
 | U1 | `simruntime-offload uninstall --dry-run` | Lists a restore for every runtime; changes nothing. |
 | U2 | `simruntime-offload uninstall` | Every runtime "Disk Image, Ready" in `xcrun simctl runtime list`; the agent, `~/Library/Application Support/simruntime-offload`, the log directory and the mount root are gone; the images are still on the volume. |
 | U3 | `setup`, then `offload` each runtime again | Each offload reuses its image without copying. |
+
+## Upgrade between releases
+
+Only when testing a release, with the previous release installed and its
+consent already given.
+
+| # | Do | Expect |
+|---|---|---|
+| G1 | Download the new release through a browser; run its `--help` | Runs without a Gatekeeper warning. |
+| G2 | Install it; `simruntime-offload setup`; `eject`, unplug and reconnect | Runtimes return as in E3 with no new prompt about removable volumes; the agent log has no "not permitted". |

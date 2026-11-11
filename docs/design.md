@@ -283,7 +283,11 @@ load. `setup --shared-link-directory=no` selects the per-user fallback instead.
 access to a removable volume, attributed to the tool. `doctor` detects a
 refused attach and explains how to grant access. With ad-hoc signing (a source
 build, or Homebrew), each upgrade is a new identity and may prompt again; a
-Developer ID–signed release would not. This is a distribution decision (§10).
+Developer ID–signed release should not. This is a distribution decision (§10).
+As built, releases are Developer ID signed and notarised by
+`.github/workflows/release.yml`; that an upgrade between two of them keeps the
+consent is expected from the designated requirement (team and identifier) but
+not yet tested.
 
 **Invariants the code enforces**
 
@@ -362,7 +366,7 @@ In priority order. The first three affect the design.
 | 3 | Link directory default | `DeviceKit/Runtimes` with the one privileged step, per-user as the declared fallback. |
 | 4 | `eject` when the volume is held | Stop and explain; force only with `--force-unmount`. |
 | 5 | Licence | MIT or Apache-2.0. Apache-2.0 if you want an explicit patent grant; otherwise MIT for simplicity. |
-| 6 | Signing and distribution | Source build and Homebrew (ad-hoc) first; consider a Developer ID release later if repeated consent prompts prove annoying. |
+| 6 | Signing and distribution | Source build and Homebrew (ad-hoc) first; consider a Developer ID release later if repeated consent prompts prove annoying. As built: Developer ID–signed, notarised release archives from tags, beside the source build. |
 | 7 | The shell harness | Keep under `experiments/` as the record of how the mechanism was found; remove the installed agent when the native one replaces it. |
 | 8 | Order of work | Validation items 1 and 2 are done; build next. |
 
