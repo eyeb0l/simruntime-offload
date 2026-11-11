@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Serialise mutating operations through one permanent lock, reload plans under
+  it, and recheck simulator state before destructive steps and service restarts.
+- Journal interrupted offloads so they can resume after internal deletion;
+  preserve staged imports after command timeouts. Manifest format 2 reads old
+  state, but requires the current agent (`setup`) and prevents downgrading.
+- Verify reused disk images and keep new copies partial until both checks pass.
+- Require matching volume UUIDs and an explicit internal/external classification.
+- Add `sync --dry-run`, bounded agent logs, command deadlines and periodic
+  retries for mount notifications received during another operation.
+- Add regression coverage for transaction interleavings, recovery, volume
+  changes, image verification, dry runs, log rotation and hung commands.
+- Uninstall retains one empty coordination lock to avoid splitting concurrent
+  commands between two lock files. Hardware acceptance gaps remain explicit.
+
 ## 0.1.2 — 2026-11-11
 
 - Releases are published as a signed and notarised archive for Apple

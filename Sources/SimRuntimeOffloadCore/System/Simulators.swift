@@ -2,7 +2,7 @@ import Foundation
 
 /// A runtime image registered with CoreSimulator's disk-image daemon: one
 /// that lives on the internal disk. From `xcrun simctl runtime list -j`.
-public struct RuntimeImage: Equatable, Decodable, Sendable {
+public struct RuntimeImage: Equatable, Codable, Sendable {
     public let identifier: String
     public let build: String
     public let version: String
@@ -38,6 +38,9 @@ public struct Device: Equatable, Sendable {
     public let isAvailable: Bool
 
     public var isBooted: Bool { state == "Booted" }
+    /// Booting and shutting-down devices still depend on simulator services.
+    /// Unknown states fail closed until CoreSimulator reports Shutdown.
+    public var requiresRuntime: Bool { state != "Shutdown" }
 }
 
 public enum SimulatorsError: Error, Equatable, CustomStringConvertible {

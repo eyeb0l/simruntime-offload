@@ -100,20 +100,23 @@ and parses only their structured (`--plist`, `-j`) output. Each wrapper is one
 small file so that a change in one of those tools is a one-file fix.
 
 **Why the agent is a one-shot, not a long-lived process.** launchd starts it at
-login and on every mount (`RunAtLoad`, `StartOnMount`); it runs `Sync` once and
-exits. Stateless and easy to reason about. The cost is a few no-op runs when
-unrelated volumes mount, each a few milliseconds.
+login, on every mount and once a minute (`RunAtLoad`, `StartOnMount`,
+`StartInterval`); it runs `Sync` once and exits. The periodic retry handles a
+mount notification received while another operation holds the state lock,
+without requiring another mount event. The agent writes its own bounded log
+instead of leaving launchd holding a file descriptor across rotation.
 
 ## 4. State
 
 | What | Where | Notes |
 |---|---|---|
 | Runtime images | `<volume>/SimRuntimes/<build>/<file>.dmg`, `SHA256SUMS`, small asset metadata | The only large data. Portable: another Mac with the tool can adopt it. |
-| Manifest | `~/Library/Application Support/simruntime-offload/manifest.json` | Build, runtime identifier, volume UUID, image path, SHA-256, size, date. Internal, so the tool can clean up while the volume is absent. |
+| Manifest | `~/Library/Application Support/simruntime-offload/manifest.json` | Build, runtime identifier, volume UUID, image path, SHA-256, size, date, and an original-image journal while offload is staged. Format 2; format 1 remains readable. Internal, so the tool can clean up while the volume is absent. |
 | Mount points | `/private/tmp/simruntime-offload-<uid>/<build>/` | Per-user directory, mode 700, ownership checked before use. Emptied at reboot; recreated. (hazard 6) |
 | Runtime links | `/Library/Developer/DeviceKit/Runtimes/offload-<build>.simruntime` | Fallback: `~/Library/Developer/CoreSimulator/Profiles/Runtimes/` when the user declines the privileged step. |
 | Agent | `~/Library/LaunchAgents/dev.simruntime-offload.agent.plist` | Points at the installed binary. |
-| Log | `~/Library/Logs/simruntime-offload/` | Timestamped; rotated by size. |
+| Log | `~/Library/Logs/simruntime-offload/` | Timestamped; current and previous logs capped at 1 MiB each. |
+| Transaction lock | `~/Library/Application Support/simruntime-offload.lock` | Empty, permanent coordination file, retained across uninstall to keep one flock inode. |
 
 Nothing is written anywhere else. In particular nothing under
 `/Library/Developer/CoreSimulator`, `/System`, or the user's simulator devices.
@@ -163,9 +166,15 @@ longer exists, and both of the daemon's inboxes are empty. Running `offload`
 again after a failure resumes: a destination file is reused only if its
 SHA-256 matches the internal image's, and is otherwise left alone and reported.
 
-A *staged* entry is one whose copy is verified but whose internal copy has not
-been confirmed gone. `Sync` never attaches a staged entry, because the same
-build is still registered from the internal disk.
+A *staged* entry records an interrupted transaction; it does not prove the
+internal copy still exists. `Sync` never attaches it. New offloads save the
+original `RuntimeImage` metadata before deletion and retain that journal until
+activation. If interrupted after deletion, a subsequent `offload` rescans,
+checks the original path, registrations and inboxes, verifies the saved SHA-256
+and the disk image, then activates without copying or deleting again. A staged
+restore, or a legacy staged entry without a journal, recovers through `restore`.
+Reused images pass both checks, and newly copied images keep their partial name
+until disk-image verification succeeds.
 
 ### 5.3 `restore <runtime>`
 
@@ -174,10 +183,11 @@ shows the platform as installed.
 
 1. Preflight. Refuse if any simulator is booted. Require the volume, the
    image, and internal free space (image size plus headroom).
-2. SHA-256 the image on the volume and compare with the manifest. On a
-   mismatch stop: nothing has been touched and the runtime is still served.
-3. Take the state lock. Mark the manifest entry *staged*, so that neither the
-   agent nor a later `sync` attaches the build while it is being imported.
+2. Take the state lock, replan from current state, SHA-256 the image on the
+   volume and compare with the manifest. On mismatch nothing is released.
+3. Recheck that every simulator is shut down. Mark the entry *staged* and
+   clear its offload journal, so that neither `sync` nor offload recovery
+   attaches a build while it is being imported.
 4. Unlink and eject the offload mount (as in 5.5, for this one runtime).
 5. `xcrun simctl runtime add <image on the volume>`. Never with `--move`.
 6. `xcrun simctl runtime scan-and-mount`, to clear the clone the import leaves
@@ -216,11 +226,18 @@ For each manifest entry:
 - **Mounted but not linked, or linked elsewhere:** report; do not guess.
 - **Volume or image absent:** remove our dangling link.
 
-Serialised by a lock. One runtime failing does not stop the others.
+Every mutating flow holds the same permanent advisory lock from fresh state
+reads through its final mutation. Offload and restore pass the held lock into
+`Sync`; uninstall passes it into every restore. `Sync` loads its manifest under
+the lock, rather than accepting an earlier snapshot. Dry-run reconciliation
+reads state without creating a lock or changing mounts or links. One runtime
+failing does not stop the others.
 
 ### 5.5 `eject`
 
-1. Refuse if any simulator is booted, naming them.
+1. Refuse if any simulator is running or changing state, naming them. Reload
+   the manifest under the transaction lock; if it is now empty, return a no-op
+   outcome without an unplug assurance.
 2. Remove every runtime's link and wait for CoreSimulator to unload them;
    restart `SimLaunchHost` once (hazard 3); then eject each mounted image,
    retrying for ten seconds (hazard 5). As first built this was done runtime
@@ -229,7 +246,10 @@ Serialised by a lock. One runtime failing does not stop the others.
    seconds, so each further runtime added ten seconds to `eject`.
 3. If a volume is still held: identify the holder where possible and stop,
    unless `--force-unmount` was given, in which case force it (hazard 4).
-4. Eject the physical disk holding the volume, which unmounts every volume on
+4. Confirm volume identity with a strict lookup: a failed info query means
+   absence only if a successful structured disk listing confirms it. Timeouts,
+   malformed identity and unknown physical disks stop without an unplug
+   assurance. Eject the physical disk holding the volume, which unmounts every volume on
    it (as built: ejecting only the tool's own volume left the disk attached,
    and would have left any other volume on it mounted). Print "safe to unplug"
    only if every step succeeded.
@@ -250,8 +270,9 @@ message says what to try instead.
    volume or image, or too little internal space for all of them together,
    stops the uninstall with nothing changed.
 2. Restore each. Images on the volume are never deleted by `uninstall`.
-3. Remove the agent, then the tool's own files by name: the manifest, the lock
-   file, the installed program, the log. Remove its directories and the
+3. Remove the agent, then the tool's own files by name: the manifest,
+   installed program and both logs. Keep the permanent coordination lock;
+   unlinking a locked file would let a second process lock a new inode. Remove its directories and the
    per-build mount points with rmdir(2), which succeeds only when they are
    empty. Anything found that the tool did not put there is left and named.
 4. Print the one command that removes the `DeviceKit/Runtimes` directory.
@@ -294,7 +315,10 @@ not yet tested.
 1. Never delete an internal runtime before its copy on the volume has passed
    both checksums.
 2. Never report space as freed without measuring it.
-3. Never unmount, eject or restart a service while a simulator is booted.
+3. Recheck that every simulator is shut down before deletion, unmount, eject
+   or service restart, including after copies, hashes and retry waits. Other
+   applications do not honour this advisory lock, so keep simulators shut down
+   throughout the operation.
 4. Never force an unmount unless the user asked for exactly that.
 5. Never act on a volume selected by name.
 6. Never leave a dangling link.

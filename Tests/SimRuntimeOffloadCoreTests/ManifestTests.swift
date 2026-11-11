@@ -53,4 +53,15 @@ final class ManifestTests: XCTestCase {
             XCTAssertEqual(error as? ManifestError, .newerVersion(found: 99))
         }
     }
+
+    func testReadsLegacyStateButWritesTheCurrentFormat() throws {
+        try FileManager.default.createDirectory(atPath: paths.stateDirectory, withIntermediateDirectories: true)
+        try #"{"version":1,"runtimes":[]}"#.write(toFile: paths.manifest, atomically: true, encoding: .utf8)
+        let store = ManifestStore(paths: paths)
+        let old = try store.load()
+        XCTAssertEqual(old.version, 1)
+        try store.save(old)
+        XCTAssertEqual(try store.load().version, Manifest.currentVersion)
+    }
+
 }

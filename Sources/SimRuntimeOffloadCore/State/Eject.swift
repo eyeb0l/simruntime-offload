@@ -8,7 +8,7 @@ public enum EjectError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .simulatorsBooted(let names):
-            return "these simulators are booted: \(names.joined(separator: ", ")). Shut them down first; nothing was changed"
+            return "these simulators are running or changing state: \(names.joined(separator: ", ")). Shut them down before retrying; no further runtime changes were made"
         case .stillInUse(let build, let message):
             return "every runtime is unregistered, but the image of \(build) is still in use (\(message)). This is usually the system's sampling daemon holding simulator binaries. Do not unplug the disk. Try `simruntime-offload eject` again shortly, or with --force-unmount; or run `simruntime-offload sync` to go back to serving the runtimes"
         case .volumeBusy(let name, let message):
@@ -24,6 +24,13 @@ public enum EjectEvent: Equatable, Sendable {
     case ejectedVolume(name: String)
 }
 
+public enum EjectOutcome: Equatable, Sendable {
+    /// A refreshed manifest was empty; no disk identity was checked.
+    case nothingToEject
+    /// Every requested volume was ejected or confirmed absent.
+    case safeToUnplug
+}
+
 /// Releases every offloaded runtime and then the volume, so the disk can be
 /// unplugged.
 ///
@@ -35,7 +42,8 @@ public struct Ejector {
     private let attacher: ImageAttaching
     private let services: ServiceControlling
     private let fileSystem: FileSystemProbing
-    private let volumeLookup: (String) -> Volume?
+    /// Nil must mean confirmed absence; failures to establish identity throw.
+    private let volumeLookup: (String) throws -> Volume?
     private let ejectVolume: (String) -> String?
     private let pause: (TimeInterval) -> Void
     private let report: (EjectEvent) -> Void
@@ -46,7 +54,7 @@ public struct Ejector {
         attacher: ImageAttaching,
         services: ServiceControlling,
         fileSystem: FileSystemProbing = FileSystem(),
-        volumeLookup: @escaping (String) -> Volume?,
+        volumeLookup: @escaping (String) throws -> Volume?,
         ejectVolume: @escaping (String) -> String?,
         pause: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
         report: @escaping (EjectEvent) -> Void = { _ in }
@@ -62,17 +70,22 @@ public struct Ejector {
         self.report = report
     }
 
-    public func run(manifest: Manifest, forceUnmount: Bool) throws {
-        let booted = try simulators.devices().filter(\.isBooted).map(\.name)
+    @discardableResult
+    public func run(forceUnmount: Bool) throws -> EjectOutcome {
+        let booted = try simulators.devices().filter(\.requiresRuntime).map(\.name)
         guard booted.isEmpty else { throw EjectError.simulatorsBooted(booted) }
 
         // Held until the volume is gone, so that an agent run started by some
         // unrelated mount cannot re-attach what is being released.
         let lock = try acquireLock()
         defer { lock.release() }
+        let manifest = try ManifestStore(paths: paths).load()
+        guard !manifest.runtimes.isEmpty else { return .nothingToEject }
+        try requireIdle()
 
         let releaser = Releaser(
-            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause)
+            paths: paths, attacher: attacher, services: services, fileSystem: fileSystem, pause: pause,
+            requireIdle: requireIdle)
         let builds = manifest.runtimes.map(\.build)
         for build in builds { report(.unregistering(build: build)) }
         try releaser.releaseAll(
@@ -86,12 +99,19 @@ public struct Ejector {
         for uuid in manifest.runtimes.map(\.volumeUUID) where seen.insert(uuid).inserted {
             // Attached is enough: a disk whose volume is already unmounted
             // still has to be released before the cable is pulled.
-            guard let volume = volumeLookup(uuid) else { continue }
+            guard let volume = try volumeLookup(uuid) else { continue }
+            try requireIdle()
             if let message = ejectVolume(uuid) {
                 throw EjectError.volumeBusy(name: volume.name, message: message)
             }
             report(.ejectedVolume(name: volume.name))
         }
+        return .safeToUnplug
+    }
+
+    private func requireIdle() throws {
+        let running = try simulators.devices().filter(\.requiresRuntime).map(\.name)
+        guard running.isEmpty else { throw EjectError.simulatorsBooted(running) }
     }
 
     /// A sync that is already running finishes within seconds; wait for it.
@@ -121,6 +141,7 @@ struct Releaser {
     let services: ServiceControlling
     let fileSystem: FileSystemProbing
     let pause: (TimeInterval) -> Void
+    let requireIdle: () throws -> Void
 
     /// Stops serving one runtime.
     func release(build: String, forceUnmount: Bool, willForce: () -> Void = {}) throws -> Outcome {
@@ -148,6 +169,7 @@ struct Releaser {
         // its link goes, and with every link gone the restarted helper has no
         // offloaded runtime left to load a library from.
         let registry = Registry(paths: paths)
+        try requireIdle()
         for build in builds { try registry.unlink(build: build) }
 
         let attached = builds.filter { fileSystem.isMountPoint(paths.mountPoint(forBuild: $0)) }
@@ -156,6 +178,7 @@ struct Releaser {
 
         pause(1)
         // The launch helper keeps a library from the runtime mapped.
+        try requireIdle()
         services.restartLaunchHost()
 
         for build in attached {
@@ -172,6 +195,7 @@ struct Releaser {
         var lastMessage = ""
         for attempt in 1...6 {
             do {
+                try requireIdle()
                 try attacher.eject(mountPoint: mountPoint)
                 return .ejected(attempts: attempt)
             } catch let AttachError.busy(_, message) {
@@ -181,6 +205,7 @@ struct Releaser {
         }
         guard forceUnmount else { throw EjectError.stillInUse(build: build, message: lastMessage) }
         willForce(build)
+        try requireIdle()
         try attacher.forceEject(mountPoint: mountPoint)
         return .forced
     }

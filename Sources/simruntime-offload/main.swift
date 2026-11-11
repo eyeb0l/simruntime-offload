@@ -20,7 +20,7 @@ let usage = """
                                             release every offloaded runtime and the volume, to unplug it
       simruntime-offload uninstall [--leave-runtimes-on-volume] [--force-unmount] [--dry-run]
                                             restore every runtime, then remove the agent and all state
-      simruntime-offload sync               attach what is available, tidy what is not; what the agent runs
+      simruntime-offload sync [--dry-run]   attach what is available, tidy what is not; what the agent runs
       simruntime-offload --version
       simruntime-offload help
 
@@ -102,7 +102,7 @@ func describe(_ state: OffloadState) -> String {
     case .notAttached: return "not attached"
     case .notLinked: return "attached but not linked"
     case .notRegistered: return "linked but not registered with CoreSimulator"
-    case .staged: return "copied to the volume; internal copy not yet removed"
+    case .staged: return "operation interrupted; run sync for recovery guidance"
     }
 }
 
@@ -153,6 +153,9 @@ func timestamp() -> String {
 
 func describe(_ result: SyncOutcome.Result) -> String {
     switch result {
+    case .wouldAttach: return "would attach and link"
+    case .wouldLink: return "would link the attached image"
+    case .wouldRemoveDanglingLink: return "would remove the dangling link"
     case .alreadyActive: return "already active"
     case .attached: return "attached and linked"
     case .linked: return "was attached; linked"
@@ -166,32 +169,47 @@ func describe(_ result: SyncOutcome.Result) -> String {
 /// What the login agent runs. Output goes to the agent's log, so every line
 /// is timestamped.
 func runSync(arguments: [String]) -> Int32 {
-    guard arguments.isEmpty else {
-        printError("sync: unknown option \(arguments[0])")
-        return 64
+    var dryRun = false
+    var agent = false
+    for argument in arguments {
+        switch argument {
+        case "--dry-run": dryRun = true
+        case "--agent": agent = true
+        default:
+            printError("sync: unknown option \(argument)")
+            return 64
+        }
     }
     let paths = Paths(home: NSHomeDirectory(), userID: getuid())
+    func log(_ message: String, error: Bool = false) {
+        let line = "[\(timestamp())] \(message)"
+        if agent && !dryRun {
+            do { try AgentLog(paths: paths).append(line) }
+            catch { printError("\(line) (could not write agent log: \(error))") }
+        } else if error {
+            printError(line)
+        } else {
+            print(line)
+        }
+    }
     let outcomes: [SyncOutcome]
     do {
-        let manifest = try ManifestStore(paths: paths).load()
-        if manifest.runtimes.isEmpty {
-            print("[\(timestamp())] nothing is offloaded; nothing to sync")
-            return 0
-        }
         let volumes = Volumes()
         outcomes = try Sync(paths: paths, volumeLookup: volumes.volume(uuid:))
-            .run(manifest: manifest, registeredRuntimes: { try Simulators().runtimes() })
+            .run(dryRun: dryRun, registeredRuntimes: { try Simulators().runtimes() })
     } catch SyncError.alreadyRunning {
         // Expected: launchd starts the agent for the mounts a sync itself makes.
-        print("[\(timestamp())] another sync is running; leaving it to finish")
+        log("another operation is running; leaving it to finish")
         return 0
     } catch {
-        printError("[\(timestamp())] sync: \(error)")
+        log("sync: \(error)", error: true)
         return 1
     }
+    if outcomes.isEmpty { log("nothing is offloaded; nothing to sync") }
+    if dryRun { log("Dry run: nothing was changed.") }
     var failed = false
     for outcome in outcomes {
-        print("[\(timestamp())] \(outcome.build): \(describe(outcome.result))")
+        log("\(outcome.build): \(describe(outcome.result))")
         if case .failed = outcome.result { failed = true }
     }
     return failed ? 1 : 0
@@ -250,13 +268,15 @@ func runSetup(arguments: [String]) -> Int32 {
     print(identical
         ? "Agent program: \(paths.installedExecutable) is current."
         : "Agent program: \(action.lowercased()) install this build at \(paths.installedExecutable).")
-    print("Agent: \(action.lowercased()) (re)load \(Paths.agentLabel); it runs `sync` at login and whenever a volume mounts.")
+    print("Agent: \(action.lowercased()) (re)load \(Paths.agentLabel); it runs `sync` at login, on volume mounts and once a minute.")
     if dryRun {
         print("")
         print("Dry run: nothing was changed.")
         return 0
     }
     do {
+        let lock = try StateLock.acquire(paths: paths)
+        defer { lock.release() }
         let copied = try agent.installExecutable(from: executable)
         try agent.install()
         if copied {
@@ -337,9 +357,9 @@ func runOffload(arguments: [String]) -> Int32 {
         volumeLookup: volumes.volume(uuid:),
         imageStore: ImageStore(),
         services: Services(userID: paths.userID),
-        sync: { manifest in
+        sync: { lock in
             try Sync(paths: paths, volumeLookup: volumes.volume(uuid:))
-                .run(manifest: manifest, registeredRuntimes: { try simulators.runtimes() })
+                .run(holding: lock, registeredRuntimes: { try simulators.runtimes() })
         },
         report: { event in
             switch event {
@@ -377,7 +397,10 @@ func runOffload(arguments: [String]) -> Int32 {
         print("Copy to:  \(plan.destination)")
         if dryRun {
             print("")
-            if FileManager.default.fileExists(atPath: plan.destination) {
+            if plan.isResuming {
+                print("Dry run: would verify the saved image, confirm the internal copy is gone,")
+                print("restart the CoreSimulator service and attach the copy. Nothing was changed.")
+            } else if FileManager.default.fileExists(atPath: plan.destination) {
                 print("Dry run: a file is already there. It would be compared with the internal image and")
                 print("used only if identical; then the internal copy would be removed, the CoreSimulator")
                 print("service restarted and the copy attached. Nothing was changed.")
@@ -432,12 +455,12 @@ func runEject(arguments: [String]) -> Int32 {
             print("Dry run: nothing was changed.")
             return 0
         }
-        try Ejector(
+        let outcome = try Ejector(
             paths: paths,
             simulators: simulators,
             attacher: Attacher(),
             services: Services(userID: paths.userID),
-            volumeLookup: volumes.volume(uuid:),
+            volumeLookup: volumes.confirmedVolume(uuid:),
             ejectVolume: volumes.eject(uuid:),
             report: { event in
                 switch event {
@@ -448,9 +471,14 @@ func runEject(arguments: [String]) -> Int32 {
                 case .ejectedVolume(let name): print("Ejected the disk holding \"\(name)\".")
                 }
             }
-        ).run(manifest: manifest, forceUnmount: forceUnmount)
+        ).run(forceUnmount: forceUnmount)
         print("")
-        print("Safe to unplug. Plugging the disk back in re-attaches the runtimes.")
+        switch outcome {
+        case .nothingToEject:
+            print("Nothing is offloaded now; no disks were ejected. Eject the disk in Finder before unplugging it.")
+        case .safeToUnplug:
+            print("Safe to unplug. Plugging the disk back in re-attaches the runtimes.")
+        }
         return 0
     } catch {
         printError("eject: \(error)")
@@ -469,9 +497,9 @@ func makeRestorer(paths: Paths, report: @escaping (RestoreEvent) -> Void) -> Res
         imageStore: ImageStore(),
         attacher: Attacher(),
         services: Services(userID: paths.userID),
-        sync: { manifest in
+        sync: { lock in
             try Sync(paths: paths, volumeLookup: volumes.volume(uuid:))
-                .run(manifest: manifest, registeredRuntimes: { try simulators.runtimes() })
+                .run(holding: lock, registeredRuntimes: { try simulators.runtimes() })
         },
         report: report)
 }

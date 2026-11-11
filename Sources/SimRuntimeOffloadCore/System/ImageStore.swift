@@ -12,9 +12,9 @@ public enum ImageStoreError: Error, Equatable, CustomStringConvertible {
         case .cannotRead(let path): return "could not read \(path)"
         case .cannotWrite(let path): return "could not write \(path)"
         case .checksumMismatch(let source, let copy):
-            return "the copy does not match the original (SHA-256 \(copy) instead of \(source)); the copy was removed"
+            return "the copy does not match the original (SHA-256 \(copy) instead of \(source))"
         case .notADiskImage(let path, let message):
-            return "\(path) did not pass disk-image verification (\(message)); the copy was removed"
+            return "\(path) did not pass disk-image verification (\(message))"
         }
     }
 }
@@ -27,6 +27,8 @@ public protocol ImageStoring {
     func copyVerified(
         from source: String, to destination: String, progress: (Int64, Int64) -> Void
     ) throws -> String
+    /// Verifies the disk image itself, without deleting an existing file on failure.
+    func verifyImage(at path: String) throws
     func sha256(ofFile path: String) throws -> String
     /// Deletes an image this tool stored, with the checksum file beside it,
     /// and the directory they were in if that leaves it empty.
@@ -67,16 +69,14 @@ public struct ImageStore: ImageStoring {
             try? files.removeItem(atPath: partial)
             throw ImageStoreError.checksumMismatch(source: sourceChecksum, copy: copyChecksum)
         }
-        try files.moveItem(atPath: partial, toPath: destination)
-
-        // The image's own internal checksums, as a second, independent check.
-        let verification = try runner.run("/usr/bin/hdiutil", ["verify", "-quiet", destination])
-        guard verification.succeeded else {
-            try? files.removeItem(atPath: destination)
-            throw ImageStoreError.notADiskImage(
-                path: destination,
-                message: verification.errorText.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Keep the partial name until both independent checks have passed.
+        do {
+            try verifyImage(at: partial)
+        } catch {
+            try? files.removeItem(atPath: partial)
+            throw error
         }
+        try files.moveItem(atPath: partial, toPath: destination)
 
         let name = (destination as NSString).lastPathComponent
         let sums = ((destination as NSString).deletingLastPathComponent as NSString)
@@ -85,8 +85,16 @@ public struct ImageStore: ImageStoring {
         return sourceChecksum
     }
 
+    public func verifyImage(at path: String) throws {
+        let result = try runner.run("/usr/bin/hdiutil", ["verify", "-quiet", path])
+        guard result.succeeded else {
+            throw ImageStoreError.notADiskImage(
+                path: path, message: result.errorText.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
     public func sha256(ofFile path: String) throws -> String {
-        try sha256(ofFile: path, uncached: false)
+        try sha256(ofFile: path, uncached: true)
     }
 
     /// Removes exactly two named files and then, without recursion, the

@@ -3,6 +3,9 @@ import Foundation
 /// What happened to one runtime during a sync.
 public struct SyncOutcome: Equatable, Sendable {
     public enum Result: Equatable, Sendable {
+        case wouldAttach
+        case wouldLink
+        case wouldRemoveDanglingLink
         case alreadyActive
         case attached
         case linked
@@ -67,13 +70,30 @@ public struct Sync {
     /// already attached and linked. At login nothing is, so the agent attaches
     /// without first waiting for CoreSimulator to start.
     public func run(
-        manifest: Manifest,
-        registeredRuntimes: () throws -> [Runtime]
+        dryRun: Bool = false, registeredRuntimes: () throws -> [Runtime]
     ) throws -> [SyncOutcome] {
-        guard !manifest.runtimes.isEmpty else { return [] }
+        if dryRun {
+            return try reconcileAll(manifest: ManifestStore(paths: paths).load(), dryRun: true,
+                                    registeredRuntimes: registeredRuntimes)
+        }
         let lock = try StateLock.acquire(paths: paths)
         defer { lock.release() }
+        return try run(holding: lock, registeredRuntimes: registeredRuntimes)
+    }
 
+    /// Shares a transaction with offload/restore. Always reads the manifest
+    /// after acquiring the lock, so a queued agent cannot resurrect an entry.
+    public func run(
+        holding lock: StateLock, registeredRuntimes: () throws -> [Runtime]
+    ) throws -> [SyncOutcome] {
+        lock.requireHeld(for: paths)
+        return try reconcileAll(manifest: ManifestStore(paths: paths).load(), dryRun: false,
+                                registeredRuntimes: registeredRuntimes)
+    }
+
+    private func reconcileAll(
+        manifest: Manifest, dryRun: Bool, registeredRuntimes: () throws -> [Runtime]
+    ) throws -> [SyncOutcome] {
         var cached: [Runtime]?
         func runtimes() throws -> [Runtime] {
             if let cached { return cached }
@@ -84,7 +104,7 @@ public struct Sync {
 
         return manifest.runtimes.map { runtime in
             do {
-                return SyncOutcome(build: runtime.build, result: try reconcile(runtime, runtimes: runtimes))
+                return SyncOutcome(build: runtime.build, result: try reconcile(runtime, dryRun: dryRun, runtimes: runtimes))
             } catch {
                 return SyncOutcome(build: runtime.build, result: .failed("\(error)"))
             }
@@ -92,7 +112,7 @@ public struct Sync {
     }
 
     private func reconcile(
-        _ runtime: OffloadedRuntime, runtimes: () throws -> [Runtime]
+        _ runtime: OffloadedRuntime, dryRun: Bool, runtimes: () throws -> [Runtime]
     ) throws -> SyncOutcome.Result {
         // Without the runtime list the furthest a status can get is
         // "not registered"; only then is CoreSimulator consulted.
@@ -108,6 +128,7 @@ public struct Sync {
 
         case .volumeAbsent, .imageMissing:
             if registry.hasDanglingLink(forBuild: runtime.build) {
+                if dryRun { return .wouldRemoveDanglingLink }
                 try registry.unlink(build: runtime.build)
                 return .removedDanglingLink
             }
@@ -116,6 +137,7 @@ public struct Sync {
                 : .waitingForVolume
 
         case .notAttached:
+            if dryRun { return .wouldAttach }
             guard let volumeRoot = status.volume?.mountPoint else { return .waitingForVolume }
             // A link left from before a restart points at nothing; clear it
             // first so CoreSimulator never sees it resolve half-way.
@@ -133,12 +155,15 @@ public struct Sync {
             return .attached
 
         case .notLinked:
+            if dryRun { return .wouldLink }
             try registry.link(build: runtime.build, to: registry.bundle(inImageMountedAt: mountPoint))
             return .linked
 
         case .staged:
             return .needsAttention(
-                "copied to the volume, but its internal copy is still installed; finish with `simruntime-offload offload \(runtime.build)`")
+                runtime.offloadSource != nil
+                    ? "offload interrupted; finish with `simruntime-offload offload \(runtime.build)` or undo with `simruntime-offload restore \(runtime.build)`"
+                    : "operation interrupted; finish with `simruntime-offload restore \(runtime.build)`")
 
         case .notRegistered:
             return .needsAttention(

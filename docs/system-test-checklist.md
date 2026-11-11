@@ -9,8 +9,31 @@ Record the result of a pass in `docs/results/<date>/`, with the versions from
 is added to `Preflight/Compatibility.swift` only after the script and this
 checklist have both passed on it.
 
-Starting state: at least one runtime offloaded, the agent installed, no
-simulator booted.
+Starting state: at least one runtime offloaded, the current agent installed
+with `setup`, no simulator booted. Keep all devices shut down during each
+mutating command unless that test explicitly checks refusal.
+
+## Regression and acceptance gates
+
+Run `swift build -c release` and `swift test` first, with no integration-test
+skip. The suite covers concurrent restore versus offload, stale plans, late
+simulator starts, post-deletion recovery, strict UUID lookup, both image checks,
+read-only sync previews, bounded logs and subprocess deadlines. Synthetic-image
+round trips exercise the real copy, verify, attach, link and eject mechanisms;
+their CoreSimulator registration and imports are test doubles.
+
+Keep these hardware acceptance gaps separate from automated results. In order:
+
+1. Xcode point-update behaviour and the full script/checklist on the new version.
+2. A week of use, including sleep/wake, reconnects and temporary-file cleanup.
+3. Two external volumes: disconnect one during a copy and reconnect it while
+   another operation holds the lock; check recovery after the operation or the
+   next periodic sync, with images intact.
+4. A second platform and a second macOS account.
+
+These are unvalidated until separately recorded on real hardware. Unit tests,
+synthetic images and a green CI run do not clear these gates. Do not add a new
+compatibility-table entry based on them.
 
 ## Xcode
 

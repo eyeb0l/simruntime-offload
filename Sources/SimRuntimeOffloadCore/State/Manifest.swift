@@ -17,13 +17,17 @@ public struct OffloadedRuntime: Codable, Equatable, Sendable {
     /// released until the import is confirmed. A staged runtime is never
     /// attached, because the same build must not be registered twice.
     public var staged: Bool?
+    /// Present only while an offload may still need to reclaim its original.
+    /// A restore clears this journal so offload cannot resume an import.
+    public var offloadSource: RuntimeImage?
 
     public var isStaged: Bool { staged ?? false }
 
     public init(
         build: String, runtimeIdentifier: String? = nil, name: String? = nil,
         volumeUUID: String, imagePath: String, sha256: String? = nil,
-        sizeBytes: Int64? = nil, offloadedAt: Date? = nil, staged: Bool? = nil
+        sizeBytes: Int64? = nil, offloadedAt: Date? = nil, staged: Bool? = nil,
+        offloadSource: RuntimeImage? = nil
     ) {
         self.build = build
         self.runtimeIdentifier = runtimeIdentifier
@@ -34,6 +38,7 @@ public struct OffloadedRuntime: Codable, Equatable, Sendable {
         self.sizeBytes = sizeBytes
         self.offloadedAt = offloadedAt
         self.staged = staged
+        self.offloadSource = offloadSource
     }
 }
 
@@ -42,7 +47,7 @@ public struct OffloadedRuntime: Codable, Equatable, Sendable {
 /// It is kept on the internal disk, not on the volume, so that the tool knows
 /// which links are its own and can remove them while the volume is absent.
 public struct Manifest: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     public var version: Int
     public var runtimes: [OffloadedRuntime]
@@ -97,6 +102,8 @@ public struct ManifestStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(manifest).write(to: URL(fileURLWithPath: paths.manifest), options: .atomic)
+        var current = manifest
+        current.version = Manifest.currentVersion
+        try encoder.encode(current).write(to: URL(fileURLWithPath: paths.manifest), options: .atomic)
     }
 }

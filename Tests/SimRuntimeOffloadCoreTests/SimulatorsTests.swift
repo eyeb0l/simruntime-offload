@@ -119,4 +119,103 @@ final class VolumesTests: XCTestCase {
         XCTAssertNil(missing.volume(uuid: "00000000-0000-0000-0000-000000000000"))
         XCTAssertNil(Volumes.parse(Data("not a plist".utf8)))
     }
+
+    func testRejectsNamesPathsAndDeviceNodesBeforeInvokingDiskutil() {
+        let runner = RecordingRunner()
+        let volumes = Volumes(runner: runner)
+        for input in ["External", "/Volumes/External", "disk7s1", ""] {
+            XCTAssertNil(volumes.volume(uuid: input))
+            XCTAssertNotNil(volumes.eject(uuid: input))
+        }
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    func testRejectsAMismatchedReturnedUUIDForLookupAndEjection() {
+        let runner = RecordingRunner()
+        runner.result = ProcessResult(status: 0, standardOutput: fixture("diskutil-info-volume.plist"))
+        let volumes = Volumes(runner: runner)
+        XCTAssertNil(volumes.volume(uuid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        XCTAssertNotNil(volumes.eject(uuid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        XCTAssertFalse(runner.invocations.contains { $0.contains("eject") })
+    }
+
+    func testMissingOrInvalidInternalClassificationFailsClosed() throws {
+        var plist = try PropertyListSerialization.propertyList(from: fixture("diskutil-info-volume.plist"), format: nil) as! [String: Any]
+        for value in [nil, "unknown"] as [String?] {
+            plist["Internal"] = value
+            let runner = RecordingRunner()
+            runner.result = ProcessResult(status: 0, standardOutput: try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0))
+            let volumes = Volumes(runner: runner)
+            let uuid = "11111111-2222-3333-4444-555555555555"
+            XCTAssertNil(volumes.volume(uuid: uuid))
+            XCTAssertNotNil(volumes.eject(uuid: uuid))
+            XCTAssertFalse(runner.invocations.contains { $0.contains("eject") })
+        }
+    }
+
+
+    private struct LookupRunner: ProcessRunning {
+        let info: ProcessResult
+        let listing: ProcessResult
+        var infoError: ProcessRunError?
+        func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
+            if arguments.first == "info" {
+                if let infoError { throw infoError }
+                return info
+            }
+            return listing
+        }
+    }
+
+    private func diskListing(_ disks: [[String: Any]]) throws -> ProcessResult {
+        ProcessResult(status: 0, standardOutput: try PropertyListSerialization.data(
+            fromPropertyList: ["AllDisks": [String](), "AllDisksAndPartitions": disks], format: .xml, options: 0))
+    }
+
+    func testConfirmedAbsenceRequiresASuccessfulDiskListing() throws {
+        let uuid = "11111111-2222-3333-4444-555555555555"
+        let runner = LookupRunner(info: ProcessResult(status: 1), listing: try diskListing([]))
+        XCTAssertNil(try Volumes(runner: runner).confirmedVolume(uuid: uuid))
+        let failed = LookupRunner(info: ProcessResult(status: 1), listing: ProcessResult(status: 1))
+        XCTAssertThrowsError(try Volumes(runner: failed).confirmedVolume(uuid: uuid))
+        let malformed = LookupRunner(info: ProcessResult(status: 1), listing: ProcessResult(status: 0, standardOutput: Data("bad plist".utf8)))
+        XCTAssertThrowsError(try Volumes(runner: malformed).confirmedVolume(uuid: uuid))
+    }
+
+    func testInfoFailureForAVolumeStillInTheDiskListingIsNotAbsence() throws {
+        let uuid = "11111111-2222-3333-4444-555555555555"
+        let listing = try diskListing([["APFSVolumes": [["VolumeUUID": uuid, "VolumeName": "External"]]]])
+        let runner = LookupRunner(info: ProcessResult(status: 1), listing: listing)
+        XCTAssertThrowsError(try Volumes(runner: runner).confirmedVolume(uuid: uuid)) {
+            XCTAssertEqual($0 as? VolumeLookupError, .unconfirmed(uuid: uuid))
+        }
+        let incomplete = try diskListing([["Partitions": [["VolumeName": "External"]]]])
+        XCTAssertThrowsError(try Volumes(runner: LookupRunner(info: ProcessResult(status: 1), listing: incomplete)).confirmedVolume(uuid: uuid))
+    }
+
+    func testATimedOutLookupDoesNotCertifyAbsence() throws {
+        let uuid = "11111111-2222-3333-4444-555555555555"
+        let timeout = ProcessRunError.timedOut(executable: "/usr/sbin/diskutil", seconds: 60)
+        let runner = LookupRunner(info: ProcessResult(status: 0), listing: try diskListing([]), infoError: timeout)
+        XCTAssertThrowsError(try Volumes(runner: runner).confirmedVolume(uuid: uuid)) {
+            XCTAssertEqual($0 as? ProcessRunError, timeout)
+        }
+    }
+
+    func testInvalidIdentityCannotCertifyAbsenceEvenWhenInfoSucceeded() throws {
+        let uuid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        let runner = LookupRunner(info: ProcessResult(status: 0, standardOutput: fixture("diskutil-info-volume.plist")),
+                                  listing: try diskListing([]))
+        XCTAssertThrowsError(try Volumes(runner: runner).confirmedVolume(uuid: uuid))
+    }
+
+    func testAPFSWithoutOneConfirmedPhysicalStoreCannotReportSuccessfulEjection() throws {
+        var info = try PropertyListSerialization.propertyList(from: fixture("diskutil-info-volume.plist"), format: nil) as! [String: Any]
+        info.removeValue(forKey: "APFSPhysicalStores")
+        let runner = RecordingRunner()
+        runner.result = ProcessResult(status: 0, standardOutput: try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0))
+        XCTAssertNotNil(Volumes(runner: runner).eject(uuid: "11111111-2222-3333-4444-555555555555"))
+        XCTAssertFalse(runner.invocations.contains { $0.contains("eject") }, "the APFS container parent is not a confirmed physical disk")
+    }
+
 }

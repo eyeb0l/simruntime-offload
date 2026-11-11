@@ -37,12 +37,13 @@ public struct Agent {
     func propertyList(program: String) -> [String: Any] {
         [
             "Label": Paths.agentLabel,
-            "ProgramArguments": [program, "sync"],
+            "ProgramArguments": [program, "sync", "--agent"],
             "RunAtLoad": true,
             "StartOnMount": true,
+            // Mount notifications can arrive while a transaction holds the
+            // lock. Retry later even when no further mount event occurs.
+            "StartInterval": 60,
             "ProcessType": "Interactive",
-            "StandardOutPath": paths.agentLog,
-            "StandardErrorPath": paths.agentLog,
         ]
     }
 
