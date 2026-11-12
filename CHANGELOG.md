@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 — 2026-11-12
+
+- Add an optional agent skill for diagnosing missing offloaded runtimes,
+  misleading Xcode download prompts and external-volume issues. Ordinary
+  simulator builds, runs and tests need no extra steps.
+- Document symlink installation, upgrades and removal for common agent skills
+  directories, and include the skill in release archives.
+
 ## 0.1.3 — 2026-11-11
 
 - Serialise mutating operations through one permanent lock, reload plans under
