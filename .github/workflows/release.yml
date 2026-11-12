@@ -89,6 +89,7 @@ jobs:
           stage="$RUNNER_TEMP/$name"
           mkdir "$stage"
           cp "$BINARY" LICENSE README.md CHANGELOG.md "$stage/"
+          cp -R skills "$stage/skills"
           ditto -c -k --keepParent "$stage" "$RUNNER_TEMP/$name.zip"
           echo "ARCHIVE=$RUNNER_TEMP/$name.zip" >> "$GITHUB_ENV"
 

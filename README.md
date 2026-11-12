@@ -19,7 +19,7 @@ Served from an external volume
 
 ## Read this first
 
-This is version 0.1.3 of a tool that depends on behaviour Apple does not
+This is version 0.1.4 of a tool that depends on behaviour Apple does not
 document. It was developed and tested on **one Mac**. Know what that means
 before trusting it.
 
@@ -123,6 +123,49 @@ put this one does not matter. **After upgrading, run `setup` again** to update
 that copy and its job definition. Do not run old and new tool versions together.
 The current source writes manifest format 2; it reads format 1, but older
 releases cannot read format 2.
+
+### Optional agent skill
+
+The small [simruntime-offload skill](skills/simruntime-offload/SKILL.md) teaches
+coding agents about misleading Xcode download prompts, disconnected volumes
+and offload diagnostics. Normal simulator builds, runs and tests need no
+special workflow. Installing the tool does not install the skill.
+
+From the root of a source checkout or an extracted release that contains
+`skills/`, choose a skills directory your agent reads:
+
+| Directory | Use |
+|---|---|
+| `~/.agents/skills` | Shared agent skills; the current Codex user-level location |
+| `~/.codex/skills` | Codex clients configured to use this location |
+| `~/.claude/skills` | Claude Code personal skills |
+
+For example, to install into `~/.agents/skills`:
+
+```sh
+skill_dir="$HOME/.agents/skills"
+mkdir -p "$skill_dir"
+ln -s "$PWD/skills/simruntime-offload" "$skill_dir/"
+```
+
+Change `skill_dir` for another location. Use one location per agent to avoid
+duplicate discovery; you do not need all three. Codex supports symlinked skill
+folders ([official documentation](https://learn.chatgpt.com/docs/build-skills)).
+Start a new agent session if the skill does not appear.
+
+Keep the checkout or extracted release at that path: moving or deleting it
+breaks the link. A link to a checkout follows its updates; after replacing an
+extracted release, remove the old link and create one to the new directory.
+Alternatively, copy the skill folder into your agent's skills directory and
+replace the copy when upgrading.
+
+To remove the example installation, delete only its symlink:
+
+```sh
+unlink "$HOME/.agents/skills/simruntime-offload"
+```
+
+This leaves the source skill and the runtime offload installation untouched.
 
 ## Use
 
@@ -269,6 +312,7 @@ new macOS or Xcode version gets validated.
 | Path | Purpose |
 |---|---|
 | `Sources/`, `Tests/` | The tool: a Swift package with no dependencies. |
+| `skills/simruntime-offload/` | Optional troubleshooting guidance for coding agents. |
 | `scripts/system-test.sh` | The system test. |
 | `scripts/collect-baseline.sh` | Read-only diagnostic collection, with personal identifiers redacted. |
 | `fixtures/HelloSim/` | A minimal iOS app used to test build, install and launch. |
